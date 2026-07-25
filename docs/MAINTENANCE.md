@@ -223,18 +223,16 @@ the tallest-in-row height. The drop shadow / selection border sit on the
 picture, which hugs the image. `homogeneous` is deliberately *off* — it would
 force one uniform height across every row.
 
-A subtle but critical detail: a `Gtk.Picture`'s *natural* size is the full
-image's pixel dimensions unless it is size-constrained. If left uncapped,
-FlowBox lays out using that natural width (thousands of px) → a single very wide
-column whose width varies by image. So the picture is placed with
-`can_shrink(True)` inside a rigid `frame` (`overflow=HIDDEN`,
-`set_size_request(disp_w, disp_h)`, non-expanding), which caps its reported
-width at `disp_w ≤ slot_w`. Equally important, the detail area must actually
-*receive* width: the detail `Gtk.Stack` is `hexpand=True` and the detail widget
-inside the gallery's `detail_row` box is `hexpand=True`, while the info revealer
-is `hexpand=False`. Without that, the grid is starved of width and collapses to
-one column (with the scrollbar appearing mid-window, as if a hidden panel were
-present).
+A subtle but critical detail that caused repeated trouble: a `Gtk.Picture` fed a
+*file* reports the full image's pixel dimensions as its natural size, and GTK
+lays FlowBox out on that — producing one giant column, per-folder-varying slot
+widths, and a runaway measure/allocate cycle that pegs a CPU core. The fix is to
+load the thumbnail derivative into a `GdkPixbuf`, scale it **once** to fit the
+slot (`scale_simple`, width ≤ `slot_w`, height ≤ 2.2×, never upscaled beyond
+1.0), wrap it in a `Gdk.Texture`, and hand that to the Picture. The Picture's
+natural size is then exactly the scaled size — bounded, stable, no layout thrash.
+Each slot is a `slot_w`-wide box of that natural height with the thumbnail
+centred; uniform width means FlowBox packs a predictable column count.
 
 ## Info sidebar
 
@@ -251,6 +249,16 @@ Opening the viewer moves focus to the (focusable) picture via
 `grab_focus`, so the "Back to Library" button is not auto-focused and the
 ←/→ key controller on the full page receives keystrokes. The back button is
 `focus_on_click=False`.
+
+## Shutdown
+
+`do_close_request` persists window size and sidebar state, sets `_closing`
+(after which the idle callbacks `_reapply_sidebar_state` and `_live_refresh`
+no-op), and calls `app.quit()` so the process exits cleanly even if the daemon
+scan thread or a stray GSource is still around. The detail area must actually
+*receive* width, too: the detail `Gtk.Stack` and the detail widget in the
+gallery's `detail_row` box are `hexpand=True`, the info revealer is
+`hexpand=False`.
 
 ## The magic numbers
 
