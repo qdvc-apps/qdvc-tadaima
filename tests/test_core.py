@@ -233,6 +233,34 @@ def test_sidebar_state_persistence():
         assert c2.focus_folder == "/home/a"
 
 
+def test_displayable_requires_all_derivatives():
+    import importlib
+    import tempfile
+
+    import qdvc.cache as cache_mod
+
+    from PIL import Image
+
+    with tempfile.TemporaryDirectory() as tmp:
+        os.environ["XDG_CACHE_HOME"] = tmp
+        importlib.reload(cache_mod)
+        photos = os.path.join(tmp, "p")
+        os.makedirs(photos)
+        p = os.path.join(photos, "one.jpg")
+        Image.new("RGB", (40, 30), (7, 7, 7)).save(p)
+        idx = cache_mod.Index()
+        cache_mod.sync_index(idx, [photos])
+        rec = idx.records[p]
+
+        # No derivatives yet → not displayable.
+        assert cache_mod.has_all_derivatives(rec) is False
+        # Only some derivatives → still not displayable.
+        cache_mod.generate_derivatives(rec)
+        assert cache_mod.has_all_derivatives(rec) is True
+        rec.square_path = None  # simulate a missing derivative
+        assert cache_mod.has_all_derivatives(rec) is False
+
+
 if __name__ == "__main__":
     test_config_roundtrip_and_validation()
     test_index_sync_and_thumbnail()
@@ -241,4 +269,5 @@ if __name__ == "__main__":
     test_has_all_derivatives_and_dir_name()
     test_metadata_exif_and_fallback()
     test_sidebar_state_persistence()
+    test_displayable_requires_all_derivatives()
     print("ALL CORE TESTS PASSED")

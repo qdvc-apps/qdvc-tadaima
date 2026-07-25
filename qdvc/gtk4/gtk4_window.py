@@ -677,10 +677,19 @@ class MainWindow(Adw.ApplicationWindow):
             self._populate_sidebar()
 
     # ============================================================== tree
+    def _displayable_records(self) -> list:
+        """Only images whose derivatives are ALL generated are shown in the UI
+        (grid and folder counts). An image is invisible until it is fully
+        processed — no fallback rendering of the original file."""
+        return [
+            rec
+            for rec in self.index.records.values()
+            if has_all_derivatives(rec)
+        ]
+
     def _rebuild_tree(self) -> None:
         roots = self.config.scanned_folders
-        records = list(self.index.records.values())
-        self.tree_root = build_tree(records, roots)
+        self.tree_root = build_tree(self._displayable_records(), roots)
         self._populate_sidebar()
 
     def _populate_sidebar(self) -> None:
@@ -960,24 +969,17 @@ class MainWindow(Adw.ApplicationWindow):
         fbchild.add_css_class("tadaima-cell")
 
         slot_w = self._thumb_zoom
-        # Cap BOTH dimensions at the slot size: a tall image scales down to fit
-        # (becoming narrow) rather than producing a super-tall row.
+        # The slot is a square of side slot_w. Both thumbnail dimensions are
+        # capped at slot_w, so the image always fits with room to spare and is
+        # centred within the square — horizontally and vertically.
         max_h = slot_w
 
-        # Source, in order of preference — always favour the CACHED thumbnail
-        # derivative over the full-resolution original. The square derivative is
-        # deliberately NOT used here: it is a centre-crop, and grid thumbnails
-        # must preserve aspect. The original is only a transient fallback used
-        # before the background scan has generated the thumbnail.
-        src = None
-        if rec.thumb_path and os.path.exists(rec.thumb_path):
-            src = rec.thumb_path
-        elif os.path.exists(rec.path):
-            src = rec.path
-
+        # Only fully-derived images reach the grid (see _displayable_records),
+        # so the cached thumbnail derivative is always present — no fallback.
         disp_w, disp_h = slot_w, slot_w
         paintable = None
-        if src:
+        src = rec.thumb_path
+        if src and os.path.exists(src):
             try:
                 pb = GdkPixbuf.Pixbuf.new_from_file(src)
                 w, h = pb.get_width(), pb.get_height()
@@ -995,10 +997,11 @@ class MainWindow(Adw.ApplicationWindow):
         pic = Gtk.Picture()
         pic.set_can_shrink(False)
         pic.set_content_fit(Gtk.ContentFit.FILL)
-        pic.set_halign(Gtk.Align.CENTER)
-        pic.set_valign(Gtk.Align.CENTER)
         pic.set_hexpand(False)
         pic.set_vexpand(False)
+        # Centre the thumbnail within the square slot, both axes.
+        pic.set_halign(Gtk.Align.CENTER)
+        pic.set_valign(Gtk.Align.CENTER)
         pic.add_css_class("tadaima-thumb")
         if paintable is not None:
             pic.set_paintable(paintable)
@@ -1006,19 +1009,27 @@ class MainWindow(Adw.ApplicationWindow):
         pic.set_tooltip_text(rec.name)
         pic.set_cursor(Gdk.Cursor.new_from_name("pointer"))
 
-        # Slot: exactly slot_w wide (uniform → predictable column count), tall
-        # enough for this thumbnail, thumbnail centred within it.
+        # Fixed slot_w × slot_w square: uniform across all slots (so columns and
+        # rows are regular) and large enough to centre the thumbnail in both
+        # directions. The picture is centred, not stretched.
         slot = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
-        slot.set_size_request(slot_w, disp_h)
+        slot.set_size_request(slot_w, slot_w)
         slot.set_halign(Gtk.Align.CENTER)
         slot.set_valign(Gtk.Align.CENTER)
         slot.set_hexpand(False)
         slot.set_vexpand(False)
-        slot.append(pic)
+        # A centring wrapper: fills the square and centres the picture within.
+        centre = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
+        centre.set_hexpand(True)
+        centre.set_vexpand(True)
+        centre.set_halign(Gtk.Align.CENTER)
+        centre.set_valign(Gtk.Align.CENTER)
+        centre.append(pic)
+        slot.append(centre)
 
         fbchild.set_child(slot)
         fbchild.set_halign(Gtk.Align.CENTER)
-        fbchild.set_valign(Gtk.Align.START)
+        fbchild.set_valign(Gtk.Align.CENTER)
         fbchild.set_hexpand(False)
         fbchild.set_vexpand(False)
         return fbchild
@@ -1497,14 +1508,14 @@ class MainWindow(Adw.ApplicationWindow):
         prev = self.selected_folder.path if self.selected_folder else None
         if rebuild_tree:
             self.tree_root = build_tree(
-                list(self.index.records.values()), self.config.scanned_folders
+                self._displayable_records(), self.config.scanned_folders
             )
             self._populate_sidebar()
         else:
             # Keep the tree_root's data current so counts/icons are fresh, but
             # do NOT touch the tree store (that would reset expansion).
             self.tree_root = build_tree(
-                list(self.index.records.values()), self.config.scanned_folders
+                self._displayable_records(), self.config.scanned_folders
             )
         if prev and self.tree_root:
             node = find_node(self.tree_root, prev)
@@ -1515,11 +1526,14 @@ class MainWindow(Adw.ApplicationWindow):
 
     def _scan_finished(self) -> bool:
         self._scanning = False
-        n = len(self.index.records)
+        # Count only fully-derived (displayable) images in the resting status.
+        n = len(self._displayable_records())
         self._status_default = f"{format_count(n)} photos indexed"
         self.status_label.set_text(self._status_default)
-        # Grid-only refresh so the user's expanded folders stay expanded.
-        self._live_refresh(rebuild_tree=False)
+        # Full rebuild so folder counts are correct now that all derivatives are
+        # generated; _populate_sidebar re-applies the remembered expansion, so
+        # the tree does not visibly collapse.
+        self._live_refresh(rebuild_tree=True)
         self._refresh_actions()
         return False
 

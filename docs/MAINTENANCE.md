@@ -86,7 +86,12 @@ touch a scanned folder.
 4. `tree.build_tree(records, roots)` produces the filtered `FolderNode`
    hierarchy with recursive image counts and per-folder direct images.
 5. The window renders the sidebar from the tree and the gallery from the
-   selected node's `own_images`.
+   selected node's `own_images`. Crucially, only **fully-derived** images are
+   passed to `build_tree` (via `_displayable_records`, gated by
+   `has_all_derivatives`): an image is absent from both the grid and every
+   folder count until all of its derivatives (thumb, screen, square) exist. It
+   is never shown from its original file. Counts therefore grow as the
+   background scan completes each image, and settle correctly when it finishes.
 
 ## Focus behaviour
 
@@ -212,16 +217,15 @@ stops the programmatic re-expansion from rewriting what it is restoring.
 
 Each image occupies a fixed-width **slot** (`SLOT_WIDTH`, default 150px, scaled
 by the Ctrl +/-/0 zoom via `config.thumb_zoom`). The grid is a `Gtk.FlowBox`
-with `homogeneous=False`; every `Gtk.FlowBoxChild` is pinned to exactly
-`slot_w` wide with natural height. Because all slots report the *same width*,
-FlowBox packs `floor(pane / (slot_w + spacing))` slots per row, reflows across
-rows, and sizes each row to its tallest slot. The slot caps **both** the width
-and the height of a thumbnail at `slot_w`, so a very tall image scales down to
-fit (becoming narrow) instead of producing a super-tall row. The thumbnail is
-loaded from the **cached thumbnail derivative** (`rec.thumb_path`); the
-full-resolution original is a transient fallback only, used before the scan has
-generated the derivative. The square derivative is never used here (it is a
-centre-crop; grid thumbnails preserve aspect).
+with `homogeneous=False`; every `Gtk.FlowBoxChild` is a `slot_w × slot_w`
+square, so all slots are identical — FlowBox packs `floor(pane / (slot_w +
+spacing))` slots per row, rows and columns are regular, and the thumbnail is
+centred within the square both horizontally and vertically. The slot caps
+**both** the width and the height of a thumbnail at `slot_w`, so a very tall
+image scales down to fit (becoming narrow) instead of producing a super-tall
+row. Only fully-derived images reach the grid (see below), so the thumbnail is
+always the cached derivative (`rec.thumb_path`) — there is no original-file
+fallback.
 
 A subtle but critical detail that caused repeated trouble: a `Gtk.Picture` fed a
 *file* reports the full image's pixel dimensions as its natural size, and GTK
