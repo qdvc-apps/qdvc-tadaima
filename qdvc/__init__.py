@@ -20,5 +20,11 @@ THUMB_MAX_PX = 500      # "Thumbnail" size: max width AND max height.
 SCREEN_MAX_PX = 2000    # "Screen" size: max width AND max height.
 SQUARE_PX = 32          # "Square" sidebar-icon crop size (matches folder icon).
 
+# JPEG quality for cache derivatives. The small derivatives (thumbnail, square)
+# are deliberately low quality to save disk space; the screen preview is kept
+# at a more usable quality for full-window viewing.
+SMALL_JPEG_QUALITY = 55
+SCREEN_JPEG_QUALITY = 82
+
 # Bump whenever the cached per-file index schema changes.
-INDEX_VERSION = 1
+INDEX_VERSION = 2

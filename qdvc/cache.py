@@ -16,7 +16,14 @@ import os
 from pathlib import Path
 from typing import Any
 
-from . import INDEX_VERSION, SCREEN_MAX_PX, SQUARE_PX, THUMB_MAX_PX
+from . import (
+    INDEX_VERSION,
+    SCREEN_JPEG_QUALITY,
+    SCREEN_MAX_PX,
+    SMALL_JPEG_QUALITY,
+    SQUARE_PX,
+    THUMB_MAX_PX,
+)
 from .models import ImageRecord
 from .naming import cache_key, derivative_filename, is_supported_image
 
@@ -211,25 +218,29 @@ def generate_derivatives(rec: ImageRecord, want_square: bool = False) -> bool:
         with Image.open(rec.path) as im:
             im = im.convert("RGB")
 
-            # Screen size.
+            # Screen size — kept at reasonable quality for full-window viewing.
             screen = im.copy()
             screen.thumbnail((SCREEN_MAX_PX, SCREEN_MAX_PX), Image.LANCZOS)
-            screen_path = td / derivative_filename(rec.key, "screen")
-            screen.save(screen_path, "PNG")
+            screen_path = td / derivative_filename(rec.key, "screen", "jpg")
+            screen.save(screen_path, "JPEG", quality=SCREEN_JPEG_QUALITY)
             rec.screen_path = str(screen_path)
 
-            # Thumbnail size.
+            # Thumbnail — low-quality JPEG to save disk space.
             thumb = im.copy()
             thumb.thumbnail((THUMB_MAX_PX, THUMB_MAX_PX), Image.LANCZOS)
-            thumb_path = td / derivative_filename(rec.key, "thumb")
-            thumb.save(thumb_path, "PNG")
+            thumb_path = td / derivative_filename(rec.key, "thumb", "jpg")
+            thumb.save(
+                thumb_path, "JPEG", quality=SMALL_JPEG_QUALITY, optimize=True
+            )
             rec.thumb_path = str(thumb_path)
 
-            # Square crop (only when needed for a sidebar folder icon).
+            # Square crop for the sidebar icon — low-quality JPEG.
             if want_square:
                 sq = _center_square(im, SQUARE_PX)
-                square_path = td / derivative_filename(rec.key, "square")
-                sq.save(square_path, "PNG")
+                square_path = td / derivative_filename(rec.key, "square", "jpg")
+                sq.save(
+                    square_path, "JPEG", quality=SMALL_JPEG_QUALITY, optimize=True
+                )
                 rec.square_path = str(square_path)
         return True
     except Exception:

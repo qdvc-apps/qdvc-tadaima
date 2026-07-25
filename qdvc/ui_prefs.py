@@ -18,7 +18,7 @@ class Shortcut:
 
 
 SHORTCUTS: tuple[Shortcut, ...] = (
-    Shortcut("win.add-folder", "<Primary>o", "Add scanned folder", "Folders"),
+    Shortcut("win.manage-folders", "<Primary>o", "Scanned folders", "Folders"),
     Shortcut("win.regenerate-cache", "<Primary>r", "Regenerate all caches", "Cache"),
     Shortcut("win.preferences", "<Primary>comma", "Preferences", "General"),
     Shortcut("win.back", "Escape", "Back to gallery (from full view)", "Navigation"),

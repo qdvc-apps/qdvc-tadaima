@@ -63,8 +63,12 @@ qdvc-tadaima/
   read supplies a default (no schema migration needed).
 - **Index**: JSON at `$XDG_CACHE_HOME/qdvc-tadaima/index.json`, carrying
   `INDEX_VERSION`. A version mismatch discards the index (it regenerates).
-- **Thumbnails**: PNG under `$XDG_CACHE_HOME/qdvc-tadaima/thumbnails/`, named
-  `<sha1-of-path>.<kind>.png` where kind ∈ {thumb, screen, square}.
+- **Thumbnails**: under `$XDG_CACHE_HOME/qdvc-tadaima/thumbnails/`, named
+  `<sha1-of-path>.<kind>.<ext>`. Small derivatives (`thumb`, `square`) are
+  low-quality JPEGs (`SMALL_JPEG_QUALITY`) to save disk space; the `screen`
+  preview is a higher-quality JPEG (`SCREEN_JPEG_QUALITY`). `INDEX_VERSION` was
+  bumped to 2 when the format moved from PNG to JPEG, so old caches invalidate
+  and regenerate cleanly.
 
 Writes (config, index) are atomic (temp file + `os.replace`). No writes ever
 touch a scanned folder.
@@ -88,7 +92,28 @@ data. The window keeps `focus_path` (default `/` = unfocused) and, on
 `set_focus_folder`, re-renders: ancestors flat + italic, the focused node bold,
 and its subtree indented beneath.
 
-## Full view, filmstrip & status bar
+## Sidebar tree (expand/collapse + focus)
+
+The sidebar is a `Gtk.ListView` over a `Gtk.TreeListModel`. The root store holds
+the flattened italic ancestor rows (leaves — their child-model callback returns
+`None`) followed by the bold focused node; the focused node and every normal row
+below it expose their children through `_create_child_model`, which is what
+gives the native expander arrowheads. `FolderItem` (in `gtk4_items.py`) wraps a
+pure `FolderNode` as a `GObject`.
+
+"Focus on folder" sets `focus_path` and calls `_populate_sidebar`, which rebuilds
+the root store. It is driven from two places, both traced to stdout with a
+`[tadaima]` prefix for debugging: clicking a flattened ancestor row, and the
+right-click context action `win.ctx-focus` (installed fresh per right-click with
+the target path bound in a closure).
+
+## Live updates during a scan
+
+`_scan_worker` runs off the main thread. It calls `_live_refresh` via
+`GLib.idle_add` right after `sync_index` (so subfolders appear as soon as the
+walk finds them) and then again every `LIVE_REFRESH_SECONDS` while thumbnails are
+generated (so images appear as they are processed). `_live_refresh` rebuilds the
+tree from the current index and re-renders the open folder, preserving selection.
 
 - The gallery uses a `Gtk.FlowBox` (wrapping grid, `homogeneous` cells of
   `THUMB_CELL` px). Each thumbnail is a `Gtk.Picture` with

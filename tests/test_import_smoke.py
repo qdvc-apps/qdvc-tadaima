@@ -55,6 +55,7 @@ def _install_fake_gi():
 def main():
     _install_fake_gi()
     mods = [
+        "qdvc.gtk4.gtk4_items",
         "qdvc.gtk4.gtk4_actions",
         "qdvc.gtk4.gtk4_shortcuts",
         "qdvc.gtk4.gtk4_preferences",

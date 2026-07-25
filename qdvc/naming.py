@@ -24,6 +24,7 @@ def is_supported_image(path: str) -> bool:
     return ext in SUPPORTED_EXTENSIONS
 
 
-def derivative_filename(key: str, kind: str) -> str:
-    """Cache filename for a derivative. *kind* is thumb/screen/square."""
-    return f"{key}.{kind}.png"
+def derivative_filename(key: str, kind: str, ext: str = "jpg") -> str:
+    """Cache filename for a derivative. *kind* is thumb/screen/square; *ext* is
+    the file extension without a dot (e.g. "jpg", "png")."""
+    return f"{key}.{kind}.{ext}"

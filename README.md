@@ -9,10 +9,11 @@ thumbnails and its index exclusively to a disposable cache under
 
 ## What it does
 
-- **Master–detail layout.** A resizable sidebar shows a folder hierarchy
+- **Expandable tree sidebar.** A resizable sidebar shows a folder hierarchy
   filtered down to just the paths leading to (and beneath) the folders you have
-  added. The main area shows the photos in the selected folder as a wrapping
-  grid of thumbnails, each with a small drop shadow.
+  added, with expand/collapse arrows on any folder that has subfolders. The main
+  area shows the photos in the selected folder as a wrapping grid of thumbnails,
+  each with a small drop shadow.
 - **Uncropped thumbnails.** Thumbnails keep the original photo's proportions —
   a portrait stays a portrait. It simply under-fills its grid cell rather than
   being cropped to a square.
@@ -36,8 +37,12 @@ thumbnails and its index exclusively to a disposable cache under
 - **Status bar.** A bar at the bottom names the photo currently being processed
   during a background scan and updates continuously, so you can see work is
   progressing.
+- **Managing folders.** Add and remove scanned folders from the **Scanned
+  folders** window (main menu, or `Ctrl+O`). Press `Esc` to close it.
 - **Background indexing.** On launch, Tadaima quietly scans your folders for
-  changes in the background and generates thumbnails as needed.
+  changes in the background, generating thumbnails as needed. Subfolders and
+  photos appear in the UI as soon as they are found and processed, rather than
+  waiting for the whole scan to finish.
 - **Appearance.** Dark mode by default (best for photos); switch to Light or
   Automatic (follow the system) in Preferences.
 - **Density.** The sidebar defaults to a genuinely tight **Compact** layout

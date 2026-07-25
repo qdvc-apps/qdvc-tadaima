@@ -65,12 +65,21 @@ def test_index_sync_and_thumbnail():
         assert rec.screen_path and os.path.exists(rec.screen_path)
         assert rec.square_path and os.path.exists(rec.square_path)
 
+        # Small derivatives are low-quality JPEGs to save disk space.
+        assert rec.thumb_path.endswith(".jpg")
+        assert rec.square_path.endswith(".jpg")
+        with Image.open(rec.thumb_path) as th:
+            assert th.format == "JPEG"
+        with Image.open(rec.square_path) as sqi:
+            assert sqi.format == "JPEG"
+
         # Square is exactly SQUARE_PX.
         with Image.open(rec.square_path) as sq:
             assert sq.size == (cache_mod.SQUARE_PX, cache_mod.SQUARE_PX)
-        # Thumb within bounds.
+        # Thumb within bounds and aspect-preserving (not cropped square).
         with Image.open(rec.thumb_path) as th:
             assert max(th.size) <= cache_mod.THUMB_MAX_PX
+            assert th.size[0] != th.size[1]  # source was 1200x800
 
         # Persist + reload.
         index.save()
