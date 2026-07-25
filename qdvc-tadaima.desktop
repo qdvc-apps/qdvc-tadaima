@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=QDVC Tadaima
+Comment=Read-only photo browser for folders you choose
+Exec=python3 /full/path/to/qdvc_tadaima.py %U
+Path=/full/path/to
+Icon=image-x-generic
+Terminal=false
+Categories=Graphics;Viewer;GTK;
+StartupNotify=true
+StartupWMClass=qdvc-tadaima
