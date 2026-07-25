@@ -161,13 +161,16 @@ class MainWindow(Adw.ApplicationWindow):
 
         # Detail area + a right-hand info sidebar (a revealer that slides in).
         detail_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL)
-        detail_row.append(self._build_detail())
+        detail_widget = self._build_detail()
+        detail_widget.set_hexpand(True)
+        detail_row.append(detail_widget)
 
         self.info_revealer = Gtk.Revealer()
         self.info_revealer.set_transition_type(
             Gtk.RevealerTransitionType.SLIDE_LEFT
         )
         self.info_revealer.set_reveal_child(False)
+        self.info_revealer.set_hexpand(False)
         self.info_revealer.set_child(self._build_info_panel())
         detail_row.append(self.info_revealer)
 
@@ -390,15 +393,7 @@ class MainWindow(Adw.ApplicationWindow):
         head.append(close)
         panel.append(head)
 
-        # A preview thumbnail plus a list of fields.
-        self.info_preview = Gtk.Picture()
-        self.info_preview.set_content_fit(Gtk.ContentFit.CONTAIN)
-        self.info_preview.set_size_request(-1, 200)
-        self.info_preview.set_margin_top(12)
-        self.info_preview.set_margin_start(12)
-        self.info_preview.set_margin_end(12)
-        panel.append(self.info_preview)
-
+        # Metadata fields only — no image preview in the info panel.
         self.info_group = Adw.PreferencesGroup()
         self.info_group.set_margin_top(12)
         self.info_group.set_margin_bottom(12)
@@ -425,8 +420,6 @@ class MainWindow(Adw.ApplicationWindow):
         if rec is None or not hasattr(self, "_info_rows"):
             for row in getattr(self, "_info_rows", []):
                 row.set_subtitle("—")
-            if hasattr(self, "info_preview"):
-                self.info_preview.set_paintable(None)
             return
         md = read_metadata(rec.path)
         values = [
@@ -438,15 +431,6 @@ class MainWindow(Adw.ApplicationWindow):
         ]
         for row, val in zip(self._info_rows, values):
             row.set_subtitle(val)
-        src = None
-        if rec.screen_path and os.path.exists(rec.screen_path):
-            src = rec.screen_path
-        elif rec.thumb_path and os.path.exists(rec.thumb_path):
-            src = rec.thumb_path
-        elif os.path.exists(rec.path):
-            src = rec.path
-        if src:
-            self.info_preview.set_filename(src)
 
     def _set_info_visible(self, visible: bool) -> None:
         self.info_revealer.set_reveal_child(visible)
@@ -498,6 +482,8 @@ class MainWindow(Adw.ApplicationWindow):
         )
 
         self.detail_stack = Gtk.Stack()
+        self.detail_stack.set_hexpand(True)
+        self.detail_stack.set_vexpand(True)
         self.detail_scroller.set_child(self.flow)
         # Don't let the FlowBox's small natural width shrink the pane; let it
         # fill whatever width the paned gives it (so columns aren't capped).

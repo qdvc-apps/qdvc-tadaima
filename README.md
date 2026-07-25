@@ -30,8 +30,8 @@ thumbnails and its index exclusively to a disposable cache under
   bar shows the selected photo's name, date taken (from EXIF, falling back to
   the file date), pixel dimensions, and file size. The same details appear in
   the viewer's caption, and an **info button** (left of the menu, in both the
-  gallery and the viewer) opens a right-hand information sidebar with a preview
-  and the full details.
+  gallery and the viewer) opens a right-hand information sidebar
+  showing the full metadata (no image preview).
 - **Session memory.** The sidebar remembers which folders you had expanded, your
   selection, and your focus between runs.
 - **Folder counts.** Every folder shows, on the right, how many images it

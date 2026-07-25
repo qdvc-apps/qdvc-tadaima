@@ -191,7 +191,7 @@ size. `_metadata_line` formats the one-line summary shown in both the gallery
 filename bar and the full-view caption. The **info button** (left of the primary
 menu in both the gallery and the viewer, action `win.photo-info`) toggles a
 right-hand **information sidebar** (`_build_info_panel` in a `Gtk.Revealer` that
-slides in): a preview plus name, date taken, dimensions, file size, and path.
+slides in): name, date taken, dimensions, file size, and path (no image preview).
 `_update_info_panel` refreshes it whenever the selection changes while it is
 open; invoking it from the viewer returns to the gallery first (the panel lives
 there). It is not a modal dialog.
@@ -229,7 +229,21 @@ FlowBox lays out using that natural width (thousands of px) → a single very wi
 column whose width varies by image. So the picture is placed with
 `can_shrink(True)` inside a rigid `frame` (`overflow=HIDDEN`,
 `set_size_request(disp_w, disp_h)`, non-expanding), which caps its reported
-width at `disp_w ≤ slot_w`. This is what actually makes the columns pack.
+width at `disp_w ≤ slot_w`. Equally important, the detail area must actually
+*receive* width: the detail `Gtk.Stack` is `hexpand=True` and the detail widget
+inside the gallery's `detail_row` box is `hexpand=True`, while the info revealer
+is `hexpand=False`. Without that, the grid is starved of width and collapses to
+one column (with the scrollbar appearing mid-window, as if a hidden panel were
+present).
+
+## Info sidebar
+
+The `win.photo-info` action toggles a right-hand `Gtk.Revealer`
+(`_build_info_panel`) that slides in. It shows metadata fields only — name, date
+taken, dimensions, file size, path (selectable) — and deliberately does **not**
+render the photo itself. `_update_info_panel` refreshes it on selection change
+while open; a collapsed `SLIDE_LEFT` revealer reserves no width, so the grid
+gets the full pane when the panel is closed.
 
 ## Full-view focus
 
