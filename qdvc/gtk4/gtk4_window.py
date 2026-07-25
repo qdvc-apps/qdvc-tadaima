@@ -719,6 +719,35 @@ class MainWindow(Adw.ApplicationWindow):
         self._root_store.append(FolderItem(focus_node, style="focused"))
         self._refresh_actions()
 
+        # Re-apply the remembered expansion and selection after the model
+        # materialises. Rebuilding the store (here, and on every live refresh
+        # during a scan) collapses everything, so this restore must run each
+        # time — self._expanded is the single source of truth.
+        GLib.idle_add(self._reapply_sidebar_state)
+
+    def _reapply_sidebar_state(self) -> bool:
+        """Expand remembered folders and re-select the remembered folder after
+        the tree store has been (re)built."""
+        self._restoring_state = True
+        try:
+            if self._expanded:
+                self._restore_expanded(set(self._expanded))
+            target = (
+                self.selected_folder.path
+                if self.selected_folder
+                else self._pending_selected
+            )
+            if target:
+                res = self._find_tree_row(target)
+                row = res[0] if res else None
+                if row is not None:
+                    self._selection.set_selected(res[1])
+                    node = row.get_item().node
+                    self.selected_folder = node
+        finally:
+            self._restoring_state = False
+        return False
+
     def _find_tree_row(self, path: str):
         """Return the Gtk.TreeListRow whose FolderItem matches *path*, or None."""
         target = os.path.normpath(path)
@@ -742,26 +771,13 @@ class MainWindow(Adw.ApplicationWindow):
         return expanded
 
     def _restore_session_state(self) -> bool:
-        """Re-apply the previous session's expanded folders and selection."""
+        """Re-apply the previous session's expanded folders and selection, and
+        load the selected folder's photos, at startup."""
         if not self.config.scanned_folders:
             return False
-        self._restoring_state = True
-        try:
-            if self._expanded:
-                self._restore_expanded(set(self._expanded))
-            # Restore the selected folder.
-            target = self._pending_selected
-            if target:
-                res = self._find_tree_row(target)
-                row = res[0] if res else None
-                if row is not None:
-                    idx = res[1]
-                    self._selection.set_selected(idx)
-                    node = row.get_item().node
-                    self.selected_folder = node
-                    self._show_folder_photos(node)
-        finally:
-            self._restoring_state = False
+        self._reapply_sidebar_state()
+        if self.selected_folder is not None:
+            self._show_folder_photos(self.selected_folder)
         return False
 
     def _restore_expanded(self, paths: set[str]) -> bool:
@@ -950,31 +966,32 @@ class MainWindow(Adw.ApplicationWindow):
         fbchild._rec = rec
         fbchild.add_css_class("tadaima-cell")
 
-        # The slot is a fixed width (zoom-scaled from SLOT_WIDTH). Its height is
-        # natural — set by the thumbnail scaled to fit the slot width. FlowBox
-        # then packs floor(pane / (slot + spacing)) slots per row and makes each
-        # row as tall as its tallest slot.
+        # Each image occupies a fixed-width slot (zoom-scaled from SLOT_WIDTH).
         slot_w = self._thumb_zoom
 
-        # Scale the thumbnail so its WIDTH fits the slot; height follows aspect.
-        # (A very tall portrait therefore makes its row taller — as specified.)
+        # Scale the thumbnail so its WIDTH fits the slot; height follows aspect
+        # (capped so a freak portrait/panorama can't blow out a row).
         w, h = rec.thumb_w, rec.thumb_h
         if w <= 0 or h <= 0:
             w, h = slot_w, slot_w  # unknown yet (pre-scan) — assume square
-        # Cap height at ~2.2x the slot width so a pathological panorama/portrait
-        # doesn't produce an absurd row; still preserves aspect within that.
         max_h = int(slot_w * 2.2)
         scale = min(slot_w / w, max_h / h)
-        disp_w = max(1, int(round(w * scale)))
-        disp_h = max(1, int(round(h * scale)))
+        disp_w = max(1, min(slot_w, int(round(w * scale))))
+        disp_h = max(1, min(max_h, int(round(h * scale))))
 
         pic = Gtk.Picture()
-        pic.set_size_request(disp_w, disp_h)
-        pic.set_content_fit(Gtk.ContentFit.FILL)  # widget already at true aspect
-        pic.set_halign(Gtk.Align.CENTER)
-        pic.set_valign(Gtk.Align.CENTER)
+        # CRITICAL: cap the picture's natural size. A Gtk.Picture's natural size
+        # is the full image's pixel size unless can_shrink is on AND the widget
+        # is size-constrained. Left uncapped, FlowBox lays out using that huge
+        # natural width → one very wide column. We therefore fix the picture to
+        # exactly disp_w × disp_h (min == max via halign/valign FILL inside a
+        # rigid frame) and let it shrink.
+        pic.set_can_shrink(True)
+        pic.set_content_fit(Gtk.ContentFit.CONTAIN)
         pic.set_hexpand(False)
         pic.set_vexpand(False)
+        pic.set_halign(Gtk.Align.FILL)
+        pic.set_valign(Gtk.Align.FILL)
         pic.add_css_class("tadaima-thumb")
         src = None
         if rec.thumb_path and os.path.exists(rec.thumb_path):
@@ -986,25 +1003,38 @@ class MainWindow(Adw.ApplicationWindow):
         pic.set_tooltip_text(rec.name)
         pic.set_cursor(Gdk.Cursor.new_from_name("pointer"))
 
-        # Slot: fixed width; fills the row's height so a shorter thumbnail is
-        # centred vertically within the (tallest-in-row) row height. The picture
-        # sits centred at its exact scaled size (no expand → FILL never
-        # stretches it). Pinning every slot to the SAME width is what lets
-        # FlowBox pack a consistent number of columns.
+        # A rigid frame fixed to the thumbnail's display size. Because it sets
+        # BOTH the request and (via not expanding) the natural size, the picture
+        # inside can never report a width larger than disp_w.
+        frame = Gtk.Box()
+        frame.set_size_request(disp_w, disp_h)
+        frame.set_halign(Gtk.Align.CENTER)
+        frame.set_valign(Gtk.Align.CENTER)
+        frame.set_hexpand(False)
+        frame.set_vexpand(False)
+        frame.set_overflow(Gtk.Overflow.HIDDEN)
+        pic.set_size_request(disp_w, disp_h)
+        frame.append(pic)
+
+        # The slot: fixed slot_w wide, tall enough for the thumbnail, with the
+        # frame centred inside it. Every slot reports the SAME width (slot_w),
+        # which is what lets FlowBox pack floor(pane / (slot_w + spacing))
+        # columns and reflow.
         slot = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
         slot.set_size_request(slot_w, disp_h)
         slot.set_halign(Gtk.Align.CENTER)
         slot.set_valign(Gtk.Align.FILL)
-        pic.set_halign(Gtk.Align.CENTER)
-        pic.set_valign(Gtk.Align.CENTER)
-        pic.set_hexpand(False)
-        pic.set_vexpand(True)   # take the row's spare height so it can centre
-        slot.append(pic)
+        slot.set_hexpand(False)
+        frame.set_vexpand(True)  # claim spare row height so it centres
+        slot.append(frame)
 
         fbchild.set_child(slot)
+        # Pin the child to exactly slot_w and let FlowBox allocate that width
+        # (halign FILL → uses allocation, never the child's natural width).
         fbchild.set_size_request(slot_w, -1)
-        fbchild.set_halign(Gtk.Align.START)
+        fbchild.set_halign(Gtk.Align.FILL)
         fbchild.set_valign(Gtk.Align.FILL)
+        fbchild.set_hexpand(False)
         return fbchild
 
     def _metadata_line(self, rec) -> str:

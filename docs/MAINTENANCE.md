@@ -200,10 +200,13 @@ there). It is not a modal dialog.
 
 Expanded folders, the selected folder, and the focused folder persist between
 sessions via `Config.expanded_folders` / `selected_folder` / `focus_folder`.
-Expansion is tracked per row through `notify::expanded`; selection and focus on
-change. All three are re-applied on startup by `_restore_session_state` (guarded
-by `_restoring_state` so the programmatic restore doesn't rewrite what it's
-restoring) and re-saved on window close.
+`self._expanded` is the single source of truth for expansion (updated from each
+row's `notify::expanded`). Because rebuilding the tree store collapses every
+row, `_populate_sidebar` schedules `_reapply_sidebar_state` after *every*
+rebuild — including the live refreshes a background scan triggers — to re-expand
+the remembered folders and re-select the remembered folder. Without this, the
+startup scan would wipe the just-restored expansion. A `_restoring_state` guard
+stops the programmatic re-expansion from rewriting what it is restoring.
 
 ## Thumbnail grid — the slot model
 
@@ -219,6 +222,14 @@ vertically; the slot fills the row height so shorter thumbnails centre within
 the tallest-in-row height. The drop shadow / selection border sit on the
 picture, which hugs the image. `homogeneous` is deliberately *off* — it would
 force one uniform height across every row.
+
+A subtle but critical detail: a `Gtk.Picture`'s *natural* size is the full
+image's pixel dimensions unless it is size-constrained. If left uncapped,
+FlowBox lays out using that natural width (thousands of px) → a single very wide
+column whose width varies by image. So the picture is placed with
+`can_shrink(True)` inside a rigid `frame` (`overflow=HIDDEN`,
+`set_size_request(disp_w, disp_h)`, non-expanding), which caps its reported
+width at `disp_w ≤ slot_w`. This is what actually makes the columns pack.
 
 ## Full-view focus
 
