@@ -182,6 +182,42 @@ explicitly rejecting AppleDouble `._name.jpg` sidecars.
 `Adw.StyleManager.set_color_scheme` in `gtk4_app.apply_color_scheme`.
 Preferences applies it live.
 
+## Photo metadata
+
+`qdvc/metadata.py` (pure) reads a photo's display metadata: EXIF
+`DateTimeOriginal` (falling back to `DateTime`, then filesystem mtime, the
+fallback labelled "(file date)"), pixel dimensions, and human-readable file
+size. `_metadata_line` formats the one-line summary shown in both the gallery
+filename bar and the full-view caption. The **info button** (left of the primary
+menu in both the gallery and the viewer, action `win.photo-info`) opens an
+`Adw.MessageDialog` with the same fields plus the full path; it is enabled only
+when a photo is selected.
+
+## Persistent sidebar state
+
+Expanded folders, the selected folder, and the focused folder persist between
+sessions via `Config.expanded_folders` / `selected_folder` / `focus_folder`.
+Expansion is tracked per row through `notify::expanded`; selection and focus on
+change. All three are re-applied on startup by `_restore_session_state` (guarded
+by `_restoring_state` so the programmatic restore doesn't rewrite what it's
+restoring) and re-saved on window close.
+
+## Thumbnail grid columns
+
+The grid packs as many columns as fit at the current thumbnail size. The
+mechanism: `Gtk.FlowBox` with `homogeneous=True`, and every `Gtk.FlowBoxChild`
+filling a rigid `cell × cell` wrapper so all children report an identical size —
+the condition FlowBox needs to compute `floor(width / (cell + spacing))`
+columns. The picture inside keeps its true aspect (centred, non-expanding), so
+it is never stretched. `cell` is `self._thumb_zoom` (Ctrl +/-/0).
+
+## Full-view focus
+
+Opening the viewer moves focus to the (focusable) picture via
+`grab_focus`, so the "Back to Library" button is not auto-focused and the
+←/→ key controller on the full page receives keystrokes. The back button is
+`focus_on_click=False`.
+
 ## The magic numbers
 
 `THUMB_MAX_PX = 500`, `SCREEN_MAX_PX = 2000`, `SQUARE_PX = 32` live in

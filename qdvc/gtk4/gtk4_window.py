@@ -25,6 +25,7 @@ from ..cache import (
     sync_index,
 )
 from ..config import normalize_scanned_folders
+from ..metadata import human_size, read_metadata
 from ..models import FolderNode
 from ..platform_utils import reveal_in_file_manager
 from ..tree import ancestor_chain, build_tree, find_node
@@ -58,12 +59,17 @@ class MainWindow(Adw.ApplicationWindow):
         self.index.load()
 
         self.tree_root: FolderNode | None = None
-        self.focus_path: str = os.path.sep      # "/" == no focus (default)
+        # Restore focus from the previous session ("/" == no focus).
+        self.focus_path: str = self.config.focus_folder or os.path.sep
         self.selected_folder: FolderNode | None = None
         self.selected_image_path: str | None = None
+        self._selected_rec = None
 
-        # Expansion memory: folder paths the user has expanded.
-        self._expanded: set[str] = set()
+        # Expansion memory: folder paths the user has expanded. Seeded from the
+        # previous session so the tree opens where the user left it.
+        self._expanded: set[str] = set(self.config.expanded_folders)
+        # Guard so programmatic restore doesn't thrash the persisted state.
+        self._restoring_state = False
 
         # Full-view / filmstrip state.
         self._full_images: list = []
@@ -73,6 +79,7 @@ class MainWindow(Adw.ApplicationWindow):
         self._status_default = "Ready"
         self._scanned_folders_win: Adw.Window | None = None
         self._thumb_zoom = self.config.thumb_zoom
+        self._pending_selected = self.config.selected_folder
 
         win = self.config.get("window", {"width": 1100, "height": 720})
         self.set_default_size(int(win.get("width", 1100)), int(win.get("height", 720)))
@@ -83,6 +90,8 @@ class MainWindow(Adw.ApplicationWindow):
         self._build_ui()
         self._apply_density()
         self._rebuild_tree()
+        # Restore the saved expansion/selection once the tree is populated.
+        GLib.idle_add(self._restore_session_state)
 
         GLib.idle_add(self._start_background_scan)
 
@@ -125,6 +134,13 @@ class MainWindow(Adw.ApplicationWindow):
         menu_btn.set_primary(True)
         menu_btn.set_menu_model(self._primary_menu())
         header.pack_end(menu_btn)
+
+        # Info button (left of the menu): shows the selected photo's metadata.
+        self.gallery_info_btn = Gtk.Button()
+        self.gallery_info_btn.set_icon_name("dialog-information-symbolic")
+        self.gallery_info_btn.set_tooltip_text("Photo information")
+        self.gallery_info_btn.set_action_name("win.photo-info")
+        header.pack_end(self.gallery_info_btn)
         toolbar_view.add_top_bar(header)
 
         self.paned = Gtk.Paned(orientation=Gtk.Orientation.HORIZONTAL)
@@ -297,6 +313,40 @@ class MainWindow(Adw.ApplicationWindow):
 
         list_item._count.set_text(format_count(node.image_count))
 
+        # Track expansion so it can be persisted. Disconnect any handler from a
+        # previous bind of this reused list_item first.
+        prev = getattr(list_item, "_exp_handler", None)
+        prev_row = getattr(list_item, "_exp_row", None)
+        if prev is not None and prev_row is not None:
+            try:
+                prev_row.disconnect(prev)
+            except (TypeError, RuntimeError):
+                pass
+        handler = row.connect("notify::expanded", self._on_row_expanded_changed)
+        list_item._exp_handler = handler
+        list_item._exp_row = row
+
+    def _on_row_expanded_changed(self, row, _param) -> None:
+        item = row.get_item()
+        if item is None:
+            return
+        path = os.path.normpath(item.node.path)
+        if row.get_expanded():
+            self._expanded.add(path)
+        else:
+            self._expanded.discard(path)
+        if not self._restoring_state:
+            self._persist_sidebar_state()
+
+    def _persist_sidebar_state(self) -> None:
+        self.config.expanded_folders = sorted(self._expanded)
+        self.config.selected_folder = (
+            self.selected_folder.path if self.selected_folder else None
+        )
+        self.config.focus_folder = (
+            None if self.focus_path == os.path.sep else self.focus_path
+        )
+
     # ------------------------------------------------------------- detail
     def _build_detail(self) -> Gtk.Widget:
         self.detail_scroller = Gtk.ScrolledWindow()
@@ -315,10 +365,10 @@ class MainWindow(Adw.ApplicationWindow):
         self.flow.set_selection_mode(Gtk.SelectionMode.SINGLE)
         # Single click selects only; double-click (or Enter) opens the viewer.
         self.flow.set_activate_on_single_click(False)
-        # Non-homogeneous: each cell is its own fixed square; homogeneous mode
-        # can wrongly clamp the column count. FILL + hexpand lets the box use the
-        # whole viewport width so it packs as many columns as fit.
-        self.flow.set_homogeneous(False)
+        # Homogeneous + every child rigidly sized to cell×cell (see _make_thumb)
+        # means FlowBox packs floor(width / (cell + spacing)) columns — i.e. as
+        # many as fit at the current thumbnail size.
+        self.flow.set_homogeneous(True)
         self.flow.set_row_spacing(14)
         self.flow.set_column_spacing(14)
         self.flow.set_margin_top(14)
@@ -355,14 +405,32 @@ class MainWindow(Adw.ApplicationWindow):
         toolbar_view = Adw.ToolbarView()
 
         header = Adw.HeaderBar()
-        back_btn = Gtk.Button()
+        self.full_back_btn = Gtk.Button()
         back_content = Adw.ButtonContent()
         back_content.set_icon_name("go-previous-symbolic")
         back_content.set_label("Back to Library")
-        back_btn.set_child(back_content)
-        back_btn.set_tooltip_text("Back to Library")
-        back_btn.set_action_name("win.back")
-        header.pack_start(back_btn)
+        self.full_back_btn.set_child(back_content)
+        self.full_back_btn.set_tooltip_text("Back to Library")
+        self.full_back_btn.set_action_name("win.back")
+        # Keep it focusable for keyboard users, but don't let it grab focus the
+        # moment the viewer opens (see _on_thumb_activated, which moves focus to
+        # the picture instead).
+        self.full_back_btn.set_focus_on_click(False)
+        header.pack_start(self.full_back_btn)
+
+        # Menu button, also present in the viewer.
+        full_menu_btn = Gtk.MenuButton()
+        full_menu_btn.set_icon_name("open-menu-symbolic")
+        full_menu_btn.set_menu_model(self._primary_menu())
+        header.pack_end(full_menu_btn)
+
+        # Info button, left of the menu.
+        full_info_btn = Gtk.Button()
+        full_info_btn.set_icon_name("dialog-information-symbolic")
+        full_info_btn.set_tooltip_text("Photo information")
+        full_info_btn.set_action_name("win.photo-info")
+        header.pack_end(full_info_btn)
+
         toolbar_view.add_top_bar(header)
 
         strip_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=4)
@@ -404,6 +472,7 @@ class MainWindow(Adw.ApplicationWindow):
         self.full_picture.set_hexpand(True)
         self.full_picture.set_vexpand(True)
         self.full_picture.set_content_fit(Gtk.ContentFit.CONTAIN)
+        self.full_picture.set_focusable(True)
 
         self.full_caption = Gtk.Label()
         self.full_caption.set_ellipsize(Pango.EllipsizeMode.MIDDLE)
@@ -557,6 +626,29 @@ class MainWindow(Adw.ApplicationWindow):
                 expanded.add(os.path.normpath(item.node.path))
         return expanded
 
+    def _restore_session_state(self) -> bool:
+        """Re-apply the previous session's expanded folders and selection."""
+        if not self.config.scanned_folders:
+            return False
+        self._restoring_state = True
+        try:
+            if self._expanded:
+                self._restore_expanded(set(self._expanded))
+            # Restore the selected folder.
+            target = self._pending_selected
+            if target:
+                res = self._find_tree_row(target)
+                row = res[0] if res else None
+                if row is not None:
+                    idx = res[1]
+                    self._selection.set_selected(idx)
+                    node = row.get_item().node
+                    self.selected_folder = node
+                    self._show_folder_photos(node)
+        finally:
+            self._restoring_state = False
+        return False
+
     def _restore_expanded(self, paths: set[str]) -> bool:
         """Expand rows for *paths*, top-down so parents materialise children
         before we reach them. Repeats until no further expansion is possible
@@ -611,6 +703,8 @@ class MainWindow(Adw.ApplicationWindow):
             return
         self.selected_folder = node
         self._show_folder_photos(node)
+        if not self._restoring_state:
+            self._persist_sidebar_state()
 
     def _on_row_right_click(self, gesture, n_press, x, y, list_item) -> None:
         row = list_item.get_item()
@@ -708,6 +802,8 @@ class MainWindow(Adw.ApplicationWindow):
         self._set_status(
             f"Focused on {os.path.basename(norm) or '/'}", transient=True
         )
+        if not self._restoring_state:
+            self._persist_sidebar_state()
 
     def _expand_focused_row(self) -> bool:
         result = self._find_tree_row(self.focus_path)
@@ -741,9 +837,9 @@ class MainWindow(Adw.ApplicationWindow):
 
         cell = self._thumb_zoom
 
-        # Determine the image's true aspect from the recorded thumbnail size so
-        # the Picture widget can be sized to hug the visible photo (letterboxing
-        # a CONTAIN picture would leave the shadow floating off the image edges).
+        # True aspect from the recorded thumbnail size so the Picture hugs the
+        # visible photo (letterboxing a CONTAIN picture would leave the shadow
+        # floating off the image edges).
         w, h = rec.thumb_w, rec.thumb_h
         if w <= 0 or h <= 0:
             w, h = cell, cell  # unknown yet (pre-scan) — assume square-ish box
@@ -756,6 +852,8 @@ class MainWindow(Adw.ApplicationWindow):
         pic.set_content_fit(Gtk.ContentFit.FILL)  # widget already at true aspect
         pic.set_halign(Gtk.Align.CENTER)
         pic.set_valign(Gtk.Align.CENTER)
+        pic.set_hexpand(False)
+        pic.set_vexpand(False)
         pic.add_css_class("tadaima-thumb")
         src = None
         if rec.thumb_path and os.path.exists(rec.thumb_path):
@@ -767,34 +865,44 @@ class MainWindow(Adw.ApplicationWindow):
         pic.set_tooltip_text(rec.name)
         pic.set_cursor(Gdk.Cursor.new_from_name("pointer"))
 
-        # Fixed-size cell wrapper keeps grid columns aligned while the picture
-        # inside hugs the real image and carries the shadow/selection border.
+        # The wrapper is a rigid cell×cell square with the picture centered
+        # inside it (the picture keeps its true aspect and does NOT expand, so
+        # it is never stretched/cropped). The FlowBoxChild fills the wrapper, so
+        # EVERY child reports the SAME cell×cell size — the condition a
+        # homogeneous FlowBox needs to pack the maximum number of equal columns.
         wrapper = Gtk.Box()
         wrapper.set_size_request(cell, cell)
-        wrapper.set_halign(Gtk.Align.CENTER)
-        wrapper.set_valign(Gtk.Align.CENTER)
-        # Picture keeps its exact requested size (true aspect); do NOT expand,
-        # which would stretch a FILL picture and distort it.
-        pic.set_hexpand(False)
-        pic.set_vexpand(False)
+        wrapper.set_halign(Gtk.Align.FILL)
+        wrapper.set_valign(Gtk.Align.FILL)
+        wrapper.set_hexpand(True)
+        wrapper.set_vexpand(True)
         wrapper.append(pic)
 
         fbchild.set_child(wrapper)
-        fbchild.set_halign(Gtk.Align.CENTER)
+        fbchild.set_halign(Gtk.Align.FILL)
         fbchild.set_valign(Gtk.Align.START)
-        fbchild.set_hexpand(False)
-        fbchild.set_vexpand(False)
         return fbchild
+
+    def _metadata_line(self, rec) -> str:
+        """One-line summary: name · date taken · dimensions · size."""
+        md = read_metadata(rec.path)
+        return (
+            f"{rec.name}    ·    {md.date_str}    ·    "
+            f"{md.dimensions_str}    ·    {human_size(md.size_bytes)}"
+        )
 
     def _on_thumb_selected(self, flow) -> None:
         sel = flow.get_selected_children()
         if sel:
             rec = getattr(sel[0], "_rec", None)
             self.selected_image_path = getattr(sel[0], "_image_path", None)
-            self.gallery_caption.set_text(rec.name if rec else "")
+            self.gallery_caption.set_text(self._metadata_line(rec) if rec else "")
+            self._selected_rec = rec
         else:
             self.selected_image_path = None
             self.gallery_caption.set_text("")
+            self._selected_rec = None
+        self._refresh_actions()
 
     def _on_grid_key(self, controller, keyval, keycode, state) -> bool:
         """Enter opens the currently-selected thumbnail in the viewer."""
@@ -819,6 +927,9 @@ class MainWindow(Adw.ApplicationWindow):
         self._build_filmstrip()
         self._show_full_at(self._full_index)
         self.stack.set_visible_child_name("full")
+        # Move focus onto the picture so the Back button isn't auto-focused, and
+        # so the ←/→ key controller on the full page receives keystrokes.
+        GLib.idle_add(self.full_picture.grab_focus)
         self._refresh_actions()
 
     # ================================================ full view + filmstrip
@@ -869,9 +980,11 @@ class MainWindow(Adw.ApplicationWindow):
         if os.path.exists(show):
             self.full_picture.set_filename(show)
         self.full_caption.set_text(
-            f"{rec.name}    ·    {idx + 1} of {len(self._full_images)}"
+            f"{self._metadata_line(rec)}    ·    "
+            f"{idx + 1} of {len(self._full_images)}"
         )
         self.selected_image_path = rec.path
+        self._selected_rec = rec
 
         for i, (btn, pic) in enumerate(getattr(self, "_film_widgets", [])):
             if i == idx:
@@ -1124,6 +1237,37 @@ class MainWindow(Adw.ApplicationWindow):
         self._rebuild_tree()
         self._start_background_scan(force=True)
 
+    def on_photo_info(self) -> None:
+        rec = getattr(self, "_selected_rec", None)
+        if rec is None:
+            dlg = Adw.MessageDialog(
+                transient_for=self,
+                heading="No photo selected",
+                body="Select a photo to see its information.",
+            )
+            dlg.add_response("ok", "OK")
+            dlg.set_default_response("ok")
+            dlg.present()
+            return
+        md = read_metadata(rec.path)
+        lines = [
+            f"Name:  {rec.name}",
+            f"Date taken:  {md.date_str}",
+            f"Dimensions:  {md.dimensions_str}",
+            f"File size:  {human_size(md.size_bytes)}",
+            "",
+            f"Path:  {rec.path}",
+        ]
+        dlg = Adw.MessageDialog(
+            transient_for=self,
+            heading="Photo information",
+            body="\n".join(lines),
+        )
+        dlg.add_response("ok", "OK")
+        dlg.set_default_response("ok")
+        dlg.set_close_response("ok")
+        dlg.present()
+
     def on_preferences(self) -> None:
         from .gtk4_preferences import PreferencesWindow
 
@@ -1272,10 +1416,12 @@ class MainWindow(Adw.ApplicationWindow):
             "next-photo",
             in_full and self._full_index < len(self._full_images) - 1,
         )
+        set_enabled(self, "photo-info", getattr(self, "_selected_rec", None) is not None)
 
     def do_close_request(self) -> bool:
         w = self.get_width()
         h = self.get_height()
         if w > 0 and h > 0:
             self.config.set("window", {"width": w, "height": h})
+        self._persist_sidebar_state()
         return False

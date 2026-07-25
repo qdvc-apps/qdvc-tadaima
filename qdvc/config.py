@@ -38,6 +38,10 @@ DEFAULTS: dict[str, Any] = {
     "ui_backend": "gtk4",
     # Optional user-selected custom icon (absolute .png/.svg path) or None.
     "custom_icon": None,
+    # Persisted sidebar state between sessions.
+    "expanded_folders": [],        # list of absolute folder paths expanded
+    "selected_folder": None,       # absolute path of the selected folder
+    "focus_folder": None,          # absolute path of the focused folder ("/" == none)
 }
 
 _VALID_DENSITY = ("compact", "relaxed")
@@ -221,3 +225,32 @@ class Config:
             self.set("thumb_zoom", max(80, min(420, int(value))))
         except (TypeError, ValueError):
             pass
+
+    @property
+    def expanded_folders(self) -> list[str]:
+        val = self.get("expanded_folders", [])
+        if not isinstance(val, list):
+            return []
+        return [os.path.normpath(p) for p in val if isinstance(p, str)]
+
+    @expanded_folders.setter
+    def expanded_folders(self, paths: list[str]) -> None:
+        self.set("expanded_folders", [os.path.normpath(p) for p in paths])
+
+    @property
+    def selected_folder(self) -> str | None:
+        val = self.get("selected_folder", None)
+        return os.path.normpath(val) if isinstance(val, str) else None
+
+    @selected_folder.setter
+    def selected_folder(self, path: str | None) -> None:
+        self.set("selected_folder", os.path.normpath(path) if path else None)
+
+    @property
+    def focus_folder(self) -> str | None:
+        val = self.get("focus_folder", None)
+        return os.path.normpath(val) if isinstance(val, str) else None
+
+    @focus_folder.setter
+    def focus_folder(self, path: str | None) -> None:
+        self.set("focus_folder", os.path.normpath(path) if path else None)

@@ -17,6 +17,7 @@ def install_actions(window) -> None:
         ("regenerate-cache", window.on_regenerate_cache),
         ("cache-status", window.on_cache_status),
         ("preferences", window.on_preferences),
+        ("photo-info", window.on_photo_info),
         ("back", window.on_back),
         ("prev-photo", window.on_prev_photo),
         ("next-photo", window.on_next_photo),

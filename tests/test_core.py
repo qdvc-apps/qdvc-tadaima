@@ -176,10 +176,69 @@ def test_has_all_derivatives_and_dir_name():
         assert cache_mod.has_all_derivatives(rec) is True
 
 
+def test_metadata_exif_and_fallback():
+    import tempfile
+
+    from PIL import Image
+
+    from qdvc.metadata import human_size, read_metadata
+
+    with tempfile.TemporaryDirectory() as d:
+        # No EXIF -> filesystem fallback, labelled as a file date.
+        p1 = os.path.join(d, "plain.jpg")
+        Image.new("RGB", (800, 600), (1, 2, 3)).save(p1)
+        md1 = read_metadata(p1)
+        assert md1.width == 800 and md1.height == 600
+        assert md1.date_is_exif is False
+        assert "(file date)" in md1.date_str
+        assert md1.size_bytes > 0
+
+        # With EXIF DateTimeOriginal.
+        p2 = os.path.join(d, "shot.jpg")
+        im = Image.new("RGB", (1024, 768), (9, 9, 9))
+        exif = im.getexif()
+        exif[36867] = "2021:07:14 09:30:00"
+        im.save(p2, exif=exif)
+        md2 = read_metadata(p2)
+        assert md2.width == 1024 and md2.height == 768
+        assert md2.date_is_exif is True
+        assert md2.date_taken is not None and md2.date_taken.year == 2021
+
+    assert human_size(0) == "0 B"
+    assert human_size(1536) == "1.5 KB"
+
+
+def test_sidebar_state_persistence():
+    import importlib
+    import tempfile
+
+    with tempfile.TemporaryDirectory() as tmp:
+        os.environ["XDG_CONFIG_HOME"] = tmp
+        import qdvc.config as cfg_mod
+
+        importlib.reload(cfg_mod)
+        c = cfg_mod.Config()
+        assert c.expanded_folders == []
+        assert c.selected_folder is None
+        assert c.focus_folder is None
+
+        c.expanded_folders = ["/home/a", "/home/a/b"]
+        c.selected_folder = "/home/a/b"
+        c.focus_folder = "/home/a"
+
+        # Reload from disk.
+        c2 = cfg_mod.Config()
+        assert c2.expanded_folders == ["/home/a", "/home/a/b"]
+        assert c2.selected_folder == "/home/a/b"
+        assert c2.focus_folder == "/home/a"
+
+
 if __name__ == "__main__":
     test_config_roundtrip_and_validation()
     test_index_sync_and_thumbnail()
     test_absorption_normalization()
     test_content_sniffing_rejects_non_images()
     test_has_all_derivatives_and_dir_name()
+    test_metadata_exif_and_fallback()
+    test_sidebar_state_persistence()
     print("ALL CORE TESTS PASSED")

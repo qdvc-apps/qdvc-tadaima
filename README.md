@@ -26,8 +26,13 @@ thumbnails and its index exclusively to a disposable cache under
   "3 of 40") appear centered in a bar beneath the picture. The window title
   never changes. Click **Back to Library** (top-left) or press `Esc` to return,
   with your selection intact.
-- **Selected-photo filename.** In the main view, the name of the currently
-  selected photo shows in a bar just above the status bar.
+- **Selected-photo information.** In the main view, a bar just above the status
+  bar shows the selected photo's name, date taken (from EXIF, falling back to
+  the file date), pixel dimensions, and file size. The same details appear in
+  the viewer's caption, and an **info button** (left of the menu, in both the
+  gallery and the viewer) opens a dialog with the full details.
+- **Session memory.** The sidebar remembers which folders you had expanded, your
+  selection, and your focus between runs.
 - **Folder counts.** Every folder shows, on the right, how many images it
   contains recursively (children, grandchildren, and deeper).
 - **Photo-crop folder icons.** A folder that has images directly inside it gets
