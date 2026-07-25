@@ -59,11 +59,14 @@ def test_index_sync_and_thumbnail():
         assert img_path in index.records
 
         rec = index.records[img_path]
-        ok = cache_mod.generate_derivatives(rec, want_square=True)
+        ok = cache_mod.generate_derivatives(rec)  # square always generated now
         assert ok
         assert rec.thumb_path and os.path.exists(rec.thumb_path)
         assert rec.screen_path and os.path.exists(rec.screen_path)
         assert rec.square_path and os.path.exists(rec.square_path)
+
+        # Thumbnail dimensions are recorded so the UI can hug the image.
+        assert rec.thumb_w > 0 and rec.thumb_h > 0
 
         # Small derivatives are low-quality JPEGs to save disk space.
         assert rec.thumb_path.endswith(".jpg")
@@ -73,9 +76,10 @@ def test_index_sync_and_thumbnail():
         with Image.open(rec.square_path) as sqi:
             assert sqi.format == "JPEG"
 
-        # Square is exactly SQUARE_PX.
+        # Square is exactly SQUARE_PX (now 64).
         with Image.open(rec.square_path) as sq:
             assert sq.size == (cache_mod.SQUARE_PX, cache_mod.SQUARE_PX)
+        assert cache_mod.SQUARE_PX == 64
         # Thumb within bounds and aspect-preserving (not cropped square).
         with Image.open(rec.thumb_path) as th:
             assert max(th.size) <= cache_mod.THUMB_MAX_PX

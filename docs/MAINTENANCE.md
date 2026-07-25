@@ -66,9 +66,11 @@ qdvc-tadaima/
 - **Thumbnails**: under `$XDG_CACHE_HOME/qdvc-tadaima/thumbnails/`, named
   `<sha1-of-path>.<kind>.<ext>`. Small derivatives (`thumb`, `square`) are
   low-quality JPEGs (`SMALL_JPEG_QUALITY`) to save disk space; the `screen`
-  preview is a higher-quality JPEG (`SCREEN_JPEG_QUALITY`). `INDEX_VERSION` was
-  bumped to 2 when the format moved from PNG to JPEG, so old caches invalidate
-  and regenerate cleanly.
+  preview is a higher-quality JPEG (`SCREEN_JPEG_QUALITY`). A `square`
+  derivative (now 64×64) is generated for *every* image — it drives both the
+  sidebar folder icons and the filmstrip. The thumbnail's true scaled
+  dimensions (`thumb_w`/`thumb_h`) are stored in the index so the grid can size
+  each thumbnail widget to hug the image. `INDEX_VERSION` is 3.
 
 Writes (config, index) are atomic (temp file + `os.replace`). No writes ever
 touch a scanned folder.
@@ -102,10 +104,15 @@ gives the native expander arrowheads. `FolderItem` (in `gtk4_items.py`) wraps a
 pure `FolderNode` as a `GObject`.
 
 "Focus on folder" sets `focus_path` and calls `_populate_sidebar`, which rebuilds
-the root store. It is driven from two places, both traced to stdout with a
-`[tadaima]` prefix for debugging: clicking a flattened ancestor row, and the
-right-click context action `win.ctx-focus` (installed fresh per right-click with
-the target path bound in a closure).
+the root store, then auto-expands the focused row so the change is visible. It is
+driven from two places, both traced to stdout with a `[tadaima]` prefix:
+clicking a flattened ancestor row, and the right-click context menu. The context
+menu is a plain `Gtk.Popover` of real `Gtk.Button`s whose `clicked` handlers call
+`set_focus_folder` / `reveal_in_file_manager` **directly** — the earlier
+`Gio.SimpleAction` indirection (dynamically added/removed per right-click) was
+the focus bug and has been removed. The right-click gesture runs in the capture
+phase so the ListView cannot swallow button-3 first. In the sidebar, the → key
+expands the selected folder and ← collapses it (`_on_sidebar_key`).
 
 ## Live updates during a scan
 
@@ -115,11 +122,22 @@ walk finds them) and then again every `LIVE_REFRESH_SECONDS` while thumbnails ar
 generated (so images appear as they are processed). `_live_refresh` rebuilds the
 tree from the current index and re-renders the open folder, preserving selection.
 
-- The gallery uses a `Gtk.FlowBox` (wrapping grid, `homogeneous` cells of
-  `THUMB_CELL` px). Each thumbnail is a `Gtk.Picture` with
-  `ContentFit.CONTAIN`, so images keep their aspect ratio and under-fill the
-  cell — they are never cropped. The only cropped image is the 32px square
-  sidebar folder icon.
+- The gallery uses a `Gtk.FlowBox` (wrapping grid, homogeneous cells sized to
+  `self._thumb_zoom`). Each thumbnail's `Gtk.Picture` is sized to the image's
+  *true* scaled dimensions (from `thumb_w`/`thumb_h`) and placed, centered, in a
+  fixed square cell wrapper. This is deliberate: a `CONTAIN` picture in a fixed
+  box letterboxes the image, so a `box-shadow` on it would float off the photo's
+  edges. Sizing the widget to hug the image puts the drop shadow and selection
+  border (`picture.tadaima-thumb` / `…:selected picture.tadaima-thumb`) on the
+  photo's real edges. Thumbnails are never cropped; portraits under-fill the
+  cell.
+- **Zoom.** `Ctrl +` / `Ctrl -` / `Ctrl 0` (`on_zoom_in/out/reset`) change
+  `self._thumb_zoom` in 30px steps (clamped 80–420, persisted as
+  `config.thumb_zoom`); the default 150 gives roughly ten thumbnails across a
+  1920px window. Extra accelerators (`equal`, numpad variants) are registered in
+  `gtk4_app` so the shortcuts work regardless of keyboard layout.
+- A filename bar for the currently-selected photo sits above the status bar in
+  the main view (`gallery_caption`), mirroring the caption in the full viewer.
 - Double-activating a thumbnail builds `_full_images` from the current folder
   and shows the full-view page. A filmstrip (`Gtk.Box` in a horizontal
   scroller) plus prev/next header buttons and a `Gtk.EventControllerKey`

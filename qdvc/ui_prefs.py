@@ -24,6 +24,9 @@ SHORTCUTS: tuple[Shortcut, ...] = (
     Shortcut("win.back", "Escape", "Back to gallery (from full view)", "Navigation"),
     Shortcut("win.prev-photo", "Left", "Previous photo (in full view)", "Navigation"),
     Shortcut("win.next-photo", "Right", "Next photo (in full view)", "Navigation"),
+    Shortcut("win.zoom-in", "<Primary>plus", "Larger thumbnails", "View"),
+    Shortcut("win.zoom-out", "<Primary>minus", "Smaller thumbnails", "View"),
+    Shortcut("win.zoom-reset", "<Primary>0", "Reset thumbnail size", "View"),
     Shortcut("win.quit", "<Primary>q", "Quit", "General"),
 )
 

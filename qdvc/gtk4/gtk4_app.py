@@ -33,10 +33,19 @@ class TadaimaApplication(Adw.Application):
         # (registering it globally would hijack arrow keys in the sidebar and
         # grid), so it is documented in the table but not bound app-wide.
         _full_view_only = {"win.prev-photo", "win.next-photo"}
+        # Extra accelerators for actions where one label doesn't cover every
+        # keyboard layout (e.g. "+" usually needs Shift; numpad variants).
+        _extra_accels = {
+            "win.zoom-in": ["<Primary>plus", "<Primary>equal", "<Primary>KP_Add"],
+            "win.zoom-out": ["<Primary>minus", "<Primary>KP_Subtract"],
+            "win.zoom-reset": ["<Primary>0", "<Primary>KP_0"],
+        }
         for sc in SHORTCUTS:
             if sc.action in _full_view_only:
                 continue
-            self.set_accels_for_action(sc.action, [sc.accel])
+            self.set_accels_for_action(
+                sc.action, _extra_accels.get(sc.action, [sc.accel])
+            )
 
     def apply_color_scheme(self, scheme: str) -> None:
         """Map the config value onto Adw.StyleManager. Dark is the default."""

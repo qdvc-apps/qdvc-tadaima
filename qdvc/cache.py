@@ -103,6 +103,8 @@ class Index:
                     thumb_path=rec.get("thumb_path"),
                     screen_path=rec.get("screen_path"),
                     square_path=rec.get("square_path"),
+                    thumb_w=int(rec.get("thumb_w", 0)),
+                    thumb_h=int(rec.get("thumb_h", 0)),
                 )
             except (KeyError, TypeError, ValueError):
                 continue
@@ -119,6 +121,8 @@ class Index:
                     "thumb_path": r.thumb_path,
                     "screen_path": r.screen_path,
                     "square_path": r.square_path,
+                    "thumb_w": r.thumb_w,
+                    "thumb_h": r.thumb_h,
                 }
                 for path, r in self.records.items()
             },
@@ -203,8 +207,12 @@ def _delete_derivatives(rec: ImageRecord) -> None:
                 pass
 
 
-def generate_derivatives(rec: ImageRecord, want_square: bool = False) -> bool:
-    """Generate thumbnail/screen (and optionally square) derivatives for *rec*.
+def generate_derivatives(rec: ImageRecord, want_square: bool = True) -> bool:
+    """Generate thumbnail/screen/square derivatives for *rec*.
+
+    A ``square`` derivative is now generated for *every* image (it is used both
+    for sidebar folder icons and for the filmstrip), so ``want_square`` defaults
+    to True and is retained only for API compatibility.
 
     Returns True on success. Requires Pillow; if unavailable, returns False and
     leaves derivative paths as None (the UI falls back to plain folder icons and
@@ -225,7 +233,8 @@ def generate_derivatives(rec: ImageRecord, want_square: bool = False) -> bool:
             screen.save(screen_path, "JPEG", quality=SCREEN_JPEG_QUALITY)
             rec.screen_path = str(screen_path)
 
-            # Thumbnail — low-quality JPEG to save disk space.
+            # Thumbnail — low-quality JPEG to save disk space. Record its true
+            # scaled dimensions so the UI can size the widget to hug the image.
             thumb = im.copy()
             thumb.thumbnail((THUMB_MAX_PX, THUMB_MAX_PX), Image.LANCZOS)
             thumb_path = td / derivative_filename(rec.key, "thumb", "jpg")
@@ -233,15 +242,13 @@ def generate_derivatives(rec: ImageRecord, want_square: bool = False) -> bool:
                 thumb_path, "JPEG", quality=SMALL_JPEG_QUALITY, optimize=True
             )
             rec.thumb_path = str(thumb_path)
+            rec.thumb_w, rec.thumb_h = thumb.size
 
-            # Square crop for the sidebar icon — low-quality JPEG.
-            if want_square:
-                sq = _center_square(im, SQUARE_PX)
-                square_path = td / derivative_filename(rec.key, "square", "jpg")
-                sq.save(
-                    square_path, "JPEG", quality=SMALL_JPEG_QUALITY, optimize=True
-                )
-                rec.square_path = str(square_path)
+            # Square crop — used for sidebar folder icons and the filmstrip.
+            sq = _center_square(im, SQUARE_PX)
+            square_path = td / derivative_filename(rec.key, "square", "jpg")
+            sq.save(square_path, "JPEG", quality=SMALL_JPEG_QUALITY, optimize=True)
+            rec.square_path = str(square_path)
         return True
     except Exception:
         return False

@@ -30,10 +30,8 @@ from ..ui_prefs import density_spec, format_count
 from .gtk4_actions import install_actions, set_enabled
 from .gtk4_items import FolderItem
 
-# Thumbnail grid cell (image scaled to fit inside, preserving aspect ratio).
-THUMB_CELL = 190
-# Filmstrip thumbnail height (width follows aspect ratio).
-FILMSTRIP_H = 72
+# Filmstrip thumbnail size — matches the 64px square derivative it displays.
+FILMSTRIP_H = 64
 # How often the scan worker refreshes the visible tree/grid while running.
 LIVE_REFRESH_SECONDS = 0.6
 
@@ -63,6 +61,7 @@ class MainWindow(Adw.ApplicationWindow):
         self._scanning = False
         self._status_default = "Ready"
         self._scanned_folders_win: Adw.Window | None = None
+        self._thumb_zoom = self.config.thumb_zoom
 
         win = self.config.get("window", {"width": 1100, "height": 720})
         self.set_default_size(int(win.get("width", 1100)), int(win.get("height", 720)))
@@ -128,6 +127,18 @@ class MainWindow(Adw.ApplicationWindow):
         self.paned.set_resize_end_child(True)
         toolbar_view.set_content(self.paned)
 
+        # Filename bar for the currently-selected photo, sitting directly above
+        # the status bar. Mirrors the caption in the full-photo viewer.
+        self.gallery_caption = Gtk.Label(label="")
+        self.gallery_caption.set_ellipsize(Pango.EllipsizeMode.MIDDLE)
+        self.gallery_caption.set_justify(Gtk.Justification.CENTER)
+        self.gallery_caption.set_halign(Gtk.Align.CENTER)
+        self.gallery_caption.set_hexpand(True)
+        self.gallery_caption.add_css_class("tadaima-caption")
+        caption_bar = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL)
+        caption_bar.add_css_class("tadaima-caption-bar")
+        caption_bar.append(self.gallery_caption)
+
         self.status_label = Gtk.Label(label=self._status_default)
         self.status_label.set_xalign(0.0)
         self.status_label.set_ellipsize(Pango.EllipsizeMode.MIDDLE)
@@ -135,6 +146,9 @@ class MainWindow(Adw.ApplicationWindow):
         status_bar = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL)
         status_bar.add_css_class("tadaima-statusbar")
         status_bar.append(self.status_label)
+
+        # Added filename bar first so it renders above the status bar.
+        toolbar_view.add_bottom_bar(caption_bar)
         toolbar_view.add_bottom_bar(status_bar)
         return toolbar_view
 
@@ -167,6 +181,12 @@ class MainWindow(Adw.ApplicationWindow):
         self.tree_view = Gtk.ListView(model=self._selection, factory=factory)
         self.tree_view.add_css_class("navigation-sidebar")
         self.tree_view.add_css_class("tadaima-sidebar")
+
+        # Right arrow expands the selected folder; Left collapses it.
+        tkey = Gtk.EventControllerKey()
+        tkey.connect("key-pressed", self._on_sidebar_key)
+        self.tree_view.add_controller(tkey)
+
         scroller.set_child(self.tree_view)
 
         self.sidebar_placeholder = Adw.StatusPage()
@@ -228,9 +248,11 @@ class MainWindow(Adw.ApplicationWindow):
         list_item._count = count
         list_item._expander = expander
 
-        # Right-click context menu on the whole row.
+        # Right-click context menu on the whole row. Capture phase so the
+        # ListView's own click handling doesn't swallow button-3 first.
         gesture = Gtk.GestureClick()
         gesture.set_button(3)
+        gesture.set_propagation_phase(Gtk.PropagationPhase.CAPTURE)
         gesture.connect("pressed", self._on_row_right_click, list_item)
         expander.add_controller(gesture)
 
@@ -307,7 +329,11 @@ class MainWindow(Adw.ApplicationWindow):
         toolbar_view = Adw.ToolbarView()
 
         header = Adw.HeaderBar()
-        back_btn = Gtk.Button(label="Back to Library")
+        back_btn = Gtk.Button()
+        back_content = Adw.ButtonContent()
+        back_content.set_icon_name("go-previous-symbolic")
+        back_content.set_label("Back to Library")
+        back_btn.set_child(back_content)
         back_btn.set_tooltip_text("Back to Library")
         back_btn.set_action_name("win.back")
         header.pack_start(back_btn)
@@ -388,14 +414,16 @@ class MainWindow(Adw.ApplicationWindow):
         .tadaima-sidebar .tadaima-row-label {{
             font-size: {spec['font_scale']:.2f}em;
         }}
-        /* Shadow + selection border live on the picture itself, not the cell. */
+        /* Shadow + selection border live on the picture itself, which is now
+           sized to hug the real image (see _make_thumb), so they sit on the
+           photo's true edges rather than a letterboxed cell. */
         picture.tadaima-thumb {{
-            box-shadow: 0 2px 6px rgba(0,0,0,0.45);
+            box-shadow: 0 2px 8px rgba(0,0,0,0.5);
             border-radius: 3px;
             background: transparent;
         }}
         flowboxchild.tadaima-cell {{
-            padding: 4px;
+            padding: 6px;
             background: transparent;
             box-shadow: none;
         }}
@@ -492,6 +520,23 @@ class MainWindow(Adw.ApplicationWindow):
                 return row, i
         return None, -1
 
+    def _on_sidebar_key(self, controller, keyval, keycode, state) -> bool:
+        """Right arrow expands the selected folder, Left collapses it."""
+        row = self._selection.get_selected_item()  # Gtk.TreeListRow or None
+        if row is None:
+            return False
+        if keyval == Gdk.KEY_Right:
+            if row.is_expandable() and not row.get_expanded():
+                row.set_expanded(True)
+                return True
+            return False
+        if keyval == Gdk.KEY_Left:
+            if row.get_expanded():
+                row.set_expanded(False)
+                return True
+            return False
+        return False
+
     # ============================================= sidebar interactions
     def _on_tree_selected(self, selection, _param) -> None:
         row = selection.get_selected_item()   # Gtk.TreeListRow or None
@@ -509,16 +554,59 @@ class MainWindow(Adw.ApplicationWindow):
 
     def _on_row_right_click(self, gesture, n_press, x, y, list_item) -> None:
         row = list_item.get_item()
-        item: FolderItem = row.get_item()
+        if row is None:
+            print("[tadaima] right-click: no row bound to list_item", flush=True)
+            return
+        item = row.get_item()
+        if item is None:
+            print("[tadaima] right-click: no item on row", flush=True)
+            return
         node = item.node
         print(f"[tadaima] right-click on folder: {node.path}", flush=True)
-        self._install_context_actions(node)
 
-        popover = Gtk.PopoverMenu()
-        m = Gio.Menu()
-        m.append("Focus on folder", "win.ctx-focus")
-        m.append("Locate on disk", "win.ctx-locate")
-        popover.set_menu_model(m)
+        # Plain popover with real buttons that call methods directly — no
+        # Gio.Action indirection (that indirection was the earlier focus bug).
+        popover = Gtk.Popover()
+        popover.set_has_arrow(True)
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2)
+        box.set_margin_top(4)
+        box.set_margin_bottom(4)
+        box.set_margin_start(4)
+        box.set_margin_end(4)
+
+        focus_btn = Gtk.Button(label="Focus on folder")
+        focus_btn.add_css_class("flat")
+        focus_btn.set_halign(Gtk.Align.FILL)
+        focus_btn.set_has_frame(False)
+        focus_child = focus_btn.get_child()
+        if isinstance(focus_child, Gtk.Label):
+            focus_child.set_xalign(0.0)
+
+        locate_btn = Gtk.Button(label="Locate on disk")
+        locate_btn.add_css_class("flat")
+        locate_btn.set_has_frame(False)
+        locate_child = locate_btn.get_child()
+        if isinstance(locate_child, Gtk.Label):
+            locate_child.set_xalign(0.0)
+
+        target = node.path
+
+        def on_focus_clicked(_b):
+            print(f"[tadaima] Focus on folder clicked: {target}", flush=True)
+            popover.popdown()
+            self.set_focus_folder(target)
+
+        def on_locate_clicked(_b):
+            print(f"[tadaima] Locate on disk clicked: {target}", flush=True)
+            popover.popdown()
+            reveal_in_file_manager(target)
+
+        focus_btn.connect("clicked", on_focus_clicked)
+        locate_btn.connect("clicked", on_locate_clicked)
+        box.append(focus_btn)
+        box.append(locate_btn)
+        popover.set_child(box)
+
         popover.set_parent(gesture.get_widget())
         rect = Gdk.Rectangle()
         rect.x, rect.y, rect.width, rect.height = int(x), int(y), 1, 1
@@ -526,38 +614,25 @@ class MainWindow(Adw.ApplicationWindow):
         popover.connect("closed", lambda p: p.unparent())
         popover.popup()
 
-    def _install_context_actions(self, node: FolderNode) -> None:
-        for name in ("ctx-focus", "ctx-locate"):
-            if name in self._actions:
-                self.remove_action(name)
-                del self._actions[name]
-
-        target = node.path
-
-        def do_focus(_a, _p):
-            print(f"[tadaima] Focus on folder chosen: {target}", flush=True)
-            self.set_focus_folder(target)
-
-        focus = Gio.SimpleAction.new("ctx-focus", None)
-        focus.connect("activate", do_focus)
-        self.add_action(focus)
-        self._actions["ctx-focus"] = focus
-
-        locate = Gio.SimpleAction.new("ctx-locate", None)
-        locate.connect(
-            "activate", lambda a, p, path=target: reveal_in_file_manager(path)
-        )
-        self.add_action(locate)
-        self._actions["ctx-locate"] = locate
-
     def set_focus_folder(self, path: str) -> None:
         norm = os.path.normpath(path)
         print(f"[tadaima] set_focus_folder -> {norm}", flush=True)
         self.focus_path = norm
         self._populate_sidebar()
+        # Expand the focused node so its children are immediately visible —
+        # otherwise focusing a folder can look like nothing happened.
+        GLib.idle_add(self._expand_focused_row)
         self._set_status(
             f"Focused on {os.path.basename(norm) or '/'}", transient=True
         )
+
+    def _expand_focused_row(self) -> bool:
+        result = self._find_tree_row(self.focus_path)
+        row = result[0] if result else None
+        if row is not None and row.is_expandable():
+            row.set_expanded(True)
+            print(f"[tadaima] expanded focused row: {self.focus_path}", flush=True)
+        return False
 
     # ============================================== detail (thumbnails)
     def _show_folder_photos(self, node: FolderNode) -> None:
@@ -581,10 +656,21 @@ class MainWindow(Adw.ApplicationWindow):
         fbchild._rec = rec
         fbchild.add_css_class("tadaima-cell")
 
+        cell = self._thumb_zoom
+
+        # Determine the image's true aspect from the recorded thumbnail size so
+        # the Picture widget can be sized to hug the visible photo (letterboxing
+        # a CONTAIN picture would leave the shadow floating off the image edges).
+        w, h = rec.thumb_w, rec.thumb_h
+        if w <= 0 or h <= 0:
+            w, h = cell, cell  # unknown yet (pre-scan) — assume square-ish box
+        scale = min(cell / w, cell / h)
+        disp_w = max(1, int(round(w * scale)))
+        disp_h = max(1, int(round(h * scale)))
+
         pic = Gtk.Picture()
-        pic.set_size_request(THUMB_CELL, THUMB_CELL)
-        pic.set_content_fit(Gtk.ContentFit.CONTAIN)
-        pic.set_can_shrink(True)
+        pic.set_size_request(disp_w, disp_h)
+        pic.set_content_fit(Gtk.ContentFit.FILL)  # widget already at true aspect
         pic.set_halign(Gtk.Align.CENTER)
         pic.set_valign(Gtk.Align.CENTER)
         pic.add_css_class("tadaima-thumb")
@@ -598,14 +684,30 @@ class MainWindow(Adw.ApplicationWindow):
         pic.set_tooltip_text(rec.name)
         pic.set_cursor(Gdk.Cursor.new_from_name("pointer"))
 
-        fbchild.set_child(pic)
+        # Fixed-size cell wrapper keeps grid columns aligned while the picture
+        # inside hugs the real image and carries the shadow/selection border.
+        wrapper = Gtk.Box()
+        wrapper.set_size_request(cell, cell)
+        wrapper.set_halign(Gtk.Align.CENTER)
+        wrapper.set_valign(Gtk.Align.CENTER)
+        # Picture keeps its exact requested size (true aspect); do NOT expand,
+        # which would stretch a FILL picture and distort it.
+        pic.set_hexpand(False)
+        pic.set_vexpand(False)
+        wrapper.append(pic)
+
+        fbchild.set_child(wrapper)
         return fbchild
 
     def _on_thumb_selected(self, flow) -> None:
         sel = flow.get_selected_children()
-        self.selected_image_path = (
-            getattr(sel[0], "_image_path", None) if sel else None
-        )
+        if sel:
+            rec = getattr(sel[0], "_rec", None)
+            self.selected_image_path = getattr(sel[0], "_image_path", None)
+            self.gallery_caption.set_text(rec.name if rec else "")
+        else:
+            self.selected_image_path = None
+            self.gallery_caption.set_text("")
 
     def _on_thumb_activated(self, flow, child) -> None:
         rec = getattr(child, "_rec", None)
@@ -635,14 +737,17 @@ class MainWindow(Adw.ApplicationWindow):
         for i, rec in enumerate(self._full_images):
             btn = Gtk.Button()
             btn.add_css_class("flat")
-            src = (
-                rec.thumb_path
-                if (rec.thumb_path and os.path.exists(rec.thumb_path))
-                else rec.path
-            )
+            # Filmstrip uses the square derivative (every image now has one).
+            src = None
+            if rec.square_path and os.path.exists(rec.square_path):
+                src = rec.square_path
+            elif rec.thumb_path and os.path.exists(rec.thumb_path):
+                src = rec.thumb_path
+            else:
+                src = rec.path
             pic = Gtk.Picture()
-            pic.set_content_fit(Gtk.ContentFit.CONTAIN)
-            pic.set_size_request(-1, FILMSTRIP_H)
+            pic.set_content_fit(Gtk.ContentFit.COVER)
+            pic.set_size_request(FILMSTRIP_H, FILMSTRIP_H)
             pic.add_css_class("tadaima-film-thumb")
             if src and os.path.exists(src):
                 pic.set_filename(src)
@@ -695,6 +800,27 @@ class MainWindow(Adw.ApplicationWindow):
             self.on_next_photo()
             return True
         return False
+
+    # ============================================================ zoom
+    def on_zoom_in(self) -> None:
+        self._set_zoom(self._thumb_zoom + 30)
+
+    def on_zoom_out(self) -> None:
+        self._set_zoom(self._thumb_zoom - 30)
+
+    def on_zoom_reset(self) -> None:
+        self._set_zoom(150)  # default: ~10 thumbnails across a 1920px window
+
+    def _set_zoom(self, value: int) -> None:
+        value = max(80, min(420, int(value)))
+        if value == self._thumb_zoom:
+            return
+        self._thumb_zoom = value
+        self.config.thumb_zoom = value
+        # Re-render the currently shown folder at the new cell size.
+        if self.selected_folder is not None:
+            self._show_folder_photos(self.selected_folder)
+        self._set_status(f"Thumbnail size: {value}px", transient=True)
 
     # ============================================================ actions
     def on_back(self) -> None:
@@ -896,15 +1022,6 @@ class MainWindow(Adw.ApplicationWindow):
             new_or_changed, _removed = sync_index(self.index, roots)
             GLib.idle_add(self._live_refresh)
 
-            square_targets: set[str] = set()
-            by_dir: dict[str, list] = {}
-            for rec in self.index.records.values():
-                by_dir.setdefault(os.path.dirname(rec.path), []).append(rec)
-            for d, recs in by_dir.items():
-                recs.sort(key=lambda r: r.name.lower())
-                if recs:
-                    square_targets.add(recs[0].path)
-
             work = new_or_changed if not force else list(self.index.records.values())
             total = len(work)
             last_status = 0.0
@@ -914,17 +1031,12 @@ class MainWindow(Adw.ApplicationWindow):
                 if now - last_status > 0.03 or i == total:
                     self._post_status(f"Processing {i} of {total}: {rec.name}")
                     last_status = now
-                want_square = rec.path in square_targets
-                generate_derivatives(rec, want_square=want_square)
-                # Periodically push freshly-thumbnailed images into the UI.
+                # Every image gets all derivatives (incl. a square for the
+                # sidebar icon and the filmstrip).
+                generate_derivatives(rec, want_square=True)
                 if now - last_refresh > LIVE_REFRESH_SECONDS:
                     GLib.idle_add(self._live_refresh)
                     last_refresh = now
-
-            for path in square_targets:
-                rec = self.index.records.get(path)
-                if rec and not rec.square_path:
-                    generate_derivatives(rec, want_square=True)
 
             self._post_status("Saving index…")
             self.index.save()

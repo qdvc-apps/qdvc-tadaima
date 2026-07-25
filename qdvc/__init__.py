@@ -18,7 +18,7 @@ SUPPORTED_EXTENSIONS = (".jpg", ".jpeg", ".png", ".heic")
 # Thumbnail / preview magic numbers. Saved as constants; may be revisited.
 THUMB_MAX_PX = 500      # "Thumbnail" size: max width AND max height.
 SCREEN_MAX_PX = 2000    # "Screen" size: max width AND max height.
-SQUARE_PX = 32          # "Square" sidebar-icon crop size (matches folder icon).
+SQUARE_PX = 64          # "Square" derivative crop size (sidebar icons + filmstrip).
 
 # JPEG quality for cache derivatives. The small derivatives (thumbnail, square)
 # are deliberately low quality to save disk space; the screen preview is kept
@@ -27,4 +27,4 @@ SMALL_JPEG_QUALITY = 55
 SCREEN_JPEG_QUALITY = 82
 
 # Bump whenever the cached per-file index schema changes.
-INDEX_VERSION = 2
+INDEX_VERSION = 3

@@ -15,8 +15,18 @@ thumbnails and its index exclusively to a disposable cache under
   area shows the photos in the selected folder as a wrapping grid of thumbnails,
   each with a small drop shadow.
 - **Uncropped thumbnails.** Thumbnails keep the original photo's proportions —
-  a portrait stays a portrait. It simply under-fills its grid cell rather than
-  being cropped to a square.
+  a portrait stays a portrait — and the drop shadow and selection border sit on
+  the photo's real edges. Use `Ctrl +` / `Ctrl -` to make thumbnails larger or
+  smaller and `Ctrl 0` to reset; the default shows roughly ten across on a
+  typical 1920-wide window.
+- **Full view with a filmstrip.** Double-click a thumbnail to fill the window.
+  A filmstrip of square thumbnails runs along the top; prev/next arrows sit on
+  either side, and the ← / → keys step through photos. The filename and
+  position (e.g. "3 of 40") appear centered in a bar beneath the picture. The
+  window title never changes. Click **Back to Library** (top-left) or press
+  `Esc` to return, with your selection intact.
+- **Selected-photo filename.** In the main view, the name of the currently
+  selected photo shows in a bar just above the status bar.
 - **Folder counts.** Every folder shows, on the right, how many images it
   contains recursively (children, grandchildren, and deeper).
 - **Photo-crop folder icons.** A folder that has images directly inside it gets
@@ -27,13 +37,8 @@ thumbnails and its index exclusively to a disposable cache under
   folder** (makes it the root of the view, with its ancestors listed flat and in
   italics above it) and **Locate on disk** (reveals it in your file manager).
   Click a flattened ancestor to re-focus there; the top level `/` is the
-  default, unfocused view.
-- **Full view with a filmstrip.** Double-click a thumbnail to fill the window.
-  A filmstrip along the top shows the other photos in the folder; prev/next
-  arrows sit on either side, and the ← / → keys step through photos. The
-  filename and position (e.g. "3 of 40") appear centered in a bar beneath the
-  picture. The window title never changes. Click the back arrow or press `Esc`
-  to return, with your selection intact.
+  default, unfocused view. Use the → key to expand a selected folder in the
+  sidebar and ← to collapse it.
 - **Status bar.** A bar at the bottom names the photo currently being processed
   during a background scan and updates continuously, so you can see work is
   progressing.

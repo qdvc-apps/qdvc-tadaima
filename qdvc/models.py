@@ -27,6 +27,11 @@ class ImageRecord:
     screen_path: str | None = None
     square_path: str | None = None
 
+    # Pixel dimensions of the generated thumbnail (so the UI can size the
+    # thumbnail widget to hug the image and place a shadow on its true edges).
+    thumb_w: int = 0
+    thumb_h: int = 0
+
     @property
     def name(self) -> str:
         import os

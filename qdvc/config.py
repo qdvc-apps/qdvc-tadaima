@@ -26,6 +26,9 @@ DEFAULTS: dict[str, Any] = {
     "window": {"width": 1100, "height": 720},
     # Sidebar width in px (resizable; persisted).
     "sidebar_width": 300,
+    # Thumbnail cell size in px (Ctrl +/-/0 zoom; persisted). Default aims for
+    # roughly 10 thumbnails across a typical 1920px-wide window.
+    "thumb_zoom": 150,
     # Density: "compact" (default, tight padding) or "relaxed" (GTK4 default).
     "density": "compact",
     # Colour scheme: "dark" (default — suits photos), "light", or "auto"
@@ -164,5 +167,19 @@ class Config:
     def sidebar_width(self, value: int) -> None:
         try:
             self.set("sidebar_width", max(150, int(value)))
+        except (TypeError, ValueError):
+            pass
+
+    @property
+    def thumb_zoom(self) -> int:
+        try:
+            return max(80, min(420, int(self.get("thumb_zoom", 150))))
+        except (TypeError, ValueError):
+            return 150
+
+    @thumb_zoom.setter
+    def thumb_zoom(self, value: int) -> None:
+        try:
+            self.set("thumb_zoom", max(80, min(420, int(value))))
         except (TypeError, ValueError):
             pass
