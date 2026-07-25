@@ -189,9 +189,12 @@ Preferences applies it live.
 fallback labelled "(file date)"), pixel dimensions, and human-readable file
 size. `_metadata_line` formats the one-line summary shown in both the gallery
 filename bar and the full-view caption. The **info button** (left of the primary
-menu in both the gallery and the viewer, action `win.photo-info`) opens an
-`Adw.MessageDialog` with the same fields plus the full path; it is enabled only
-when a photo is selected.
+menu in both the gallery and the viewer, action `win.photo-info`) toggles a
+right-hand **information sidebar** (`_build_info_panel` in a `Gtk.Revealer` that
+slides in): a preview plus name, date taken, dimensions, file size, and path.
+`_update_info_panel` refreshes it whenever the selection changes while it is
+open; invoking it from the viewer returns to the gallery first (the panel lives
+there). It is not a modal dialog.
 
 ## Persistent sidebar state
 
@@ -202,14 +205,20 @@ change. All three are re-applied on startup by `_restore_session_state` (guarded
 by `_restoring_state` so the programmatic restore doesn't rewrite what it's
 restoring) and re-saved on window close.
 
-## Thumbnail grid columns
+## Thumbnail grid — the slot model
 
-The grid packs as many columns as fit at the current thumbnail size. The
-mechanism: `Gtk.FlowBox` with `homogeneous=True`, and every `Gtk.FlowBoxChild`
-filling a rigid `cell × cell` wrapper so all children report an identical size —
-the condition FlowBox needs to compute `floor(width / (cell + spacing))`
-columns. The picture inside keeps its true aspect (centred, non-expanding), so
-it is never stretched. `cell` is `self._thumb_zoom` (Ctrl +/-/0).
+Each image occupies a fixed-width **slot** (`SLOT_WIDTH`, default 120px, scaled
+by the Ctrl +/-/0 zoom via `config.thumb_zoom`). The grid is a `Gtk.FlowBox`
+with `homogeneous=False`; every `Gtk.FlowBoxChild` is pinned to exactly
+`slot_w` wide (`set_size_request(slot_w, -1)`) with natural height. Because all
+slots report the *same width*, FlowBox packs `floor(pane / (slot_w + spacing))`
+slots per row, reflows across rows, and sizes each row to its tallest slot.
+Inside a slot the thumbnail is scaled so its width fits `slot_w` (height follows
+aspect, capped at 2.2× to avoid a runaway row) and is centred horizontally and
+vertically; the slot fills the row height so shorter thumbnails centre within
+the tallest-in-row height. The drop shadow / selection border sit on the
+picture, which hugs the image. `homogeneous` is deliberately *off* — it would
+force one uniform height across every row.
 
 ## Full-view focus
 

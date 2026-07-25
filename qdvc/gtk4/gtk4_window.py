@@ -36,6 +36,12 @@ from .gtk4_items import FolderItem
 # Filmstrip thumbnail size — matches the 64px square derivative it displays.
 FILMSTRIP_H = 64
 
+# Thumbnail grid: each image occupies a fixed-width SLOT. As many slots as fit
+# are packed per row; rows reflow; each row's height is the tallest slot in it;
+# the thumbnail is centred within its slot. Configurable; 120px for now.
+SLOT_WIDTH = 120
+SLOT_SPACING = 12
+
 
 def _within(ancestor: str, descendant: str) -> bool:
     """True if *descendant* is *ancestor* or lies beneath it."""
@@ -44,6 +50,8 @@ def _within(ancestor: str, descendant: str) -> bool:
     if a == d:
         return True
     return d.startswith(a.rstrip(os.sep) + os.sep)
+
+
 # How often the scan worker refreshes the visible tree/grid while running.
 LIVE_REFRESH_SECONDS = 0.6
 
@@ -150,7 +158,20 @@ class MainWindow(Adw.ApplicationWindow):
         self.paned.set_start_child(self._build_sidebar())
         self.paned.set_resize_start_child(False)
         self.paned.set_shrink_start_child(False)
-        self.paned.set_end_child(self._build_detail())
+
+        # Detail area + a right-hand info sidebar (a revealer that slides in).
+        detail_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL)
+        detail_row.append(self._build_detail())
+
+        self.info_revealer = Gtk.Revealer()
+        self.info_revealer.set_transition_type(
+            Gtk.RevealerTransitionType.SLIDE_LEFT
+        )
+        self.info_revealer.set_reveal_child(False)
+        self.info_revealer.set_child(self._build_info_panel())
+        detail_row.append(self.info_revealer)
+
+        self.paned.set_end_child(detail_row)
         self.paned.set_resize_end_child(True)
         toolbar_view.set_content(self.paned)
 
@@ -347,6 +368,91 @@ class MainWindow(Adw.ApplicationWindow):
             None if self.focus_path == os.path.sep else self.focus_path
         )
 
+    def _build_info_panel(self) -> Gtk.Widget:
+        """Right-hand information sidebar for the selected photo."""
+        panel = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=0)
+        panel.set_size_request(280, -1)
+        panel.add_css_class("tadaima-info-panel")
+
+        # Small header with a title and a close button.
+        head = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL)
+        head.add_css_class("tadaima-info-head")
+        title = Gtk.Label(label="Information")
+        title.set_xalign(0.0)
+        title.set_hexpand(True)
+        title.add_css_class("heading")
+        close = Gtk.Button()
+        close.set_icon_name("window-close-symbolic")
+        close.add_css_class("flat")
+        close.set_tooltip_text("Close information")
+        close.connect("clicked", lambda b: self._set_info_visible(False))
+        head.append(title)
+        head.append(close)
+        panel.append(head)
+
+        # A preview thumbnail plus a list of fields.
+        self.info_preview = Gtk.Picture()
+        self.info_preview.set_content_fit(Gtk.ContentFit.CONTAIN)
+        self.info_preview.set_size_request(-1, 200)
+        self.info_preview.set_margin_top(12)
+        self.info_preview.set_margin_start(12)
+        self.info_preview.set_margin_end(12)
+        panel.append(self.info_preview)
+
+        self.info_group = Adw.PreferencesGroup()
+        self.info_group.set_margin_top(12)
+        self.info_group.set_margin_bottom(12)
+        self.info_group.set_margin_start(12)
+        self.info_group.set_margin_end(12)
+        self._info_rows: list = []
+        for key in ("Name", "Date taken", "Dimensions", "File size", "Path"):
+            row = Adw.ActionRow()
+            row.set_title(key)
+            row.set_subtitle("—")
+            row.set_subtitle_selectable(True)
+            self.info_group.add(row)
+            self._info_rows.append(row)
+
+        scroller = Gtk.ScrolledWindow()
+        scroller.set_vexpand(True)
+        scroller.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
+        scroller.set_child(self.info_group)
+        panel.append(scroller)
+        return panel
+
+    def _update_info_panel(self) -> None:
+        rec = getattr(self, "_selected_rec", None)
+        if rec is None or not hasattr(self, "_info_rows"):
+            for row in getattr(self, "_info_rows", []):
+                row.set_subtitle("—")
+            if hasattr(self, "info_preview"):
+                self.info_preview.set_paintable(None)
+            return
+        md = read_metadata(rec.path)
+        values = [
+            rec.name,
+            md.date_str,
+            md.dimensions_str,
+            human_size(md.size_bytes),
+            rec.path,
+        ]
+        for row, val in zip(self._info_rows, values):
+            row.set_subtitle(val)
+        src = None
+        if rec.screen_path and os.path.exists(rec.screen_path):
+            src = rec.screen_path
+        elif rec.thumb_path and os.path.exists(rec.thumb_path):
+            src = rec.thumb_path
+        elif os.path.exists(rec.path):
+            src = rec.path
+        if src:
+            self.info_preview.set_filename(src)
+
+    def _set_info_visible(self, visible: bool) -> None:
+        self.info_revealer.set_reveal_child(visible)
+        if visible:
+            self._update_info_panel()
+
     # ------------------------------------------------------------- detail
     def _build_detail(self) -> Gtk.Widget:
         self.detail_scroller = Gtk.ScrolledWindow()
@@ -360,21 +466,22 @@ class MainWindow(Adw.ApplicationWindow):
         self.flow.set_valign(Gtk.Align.START)
         self.flow.set_halign(Gtk.Align.FILL)
         self.flow.set_hexpand(True)
-        self.flow.set_max_children_per_line(1000)
+        self.flow.set_max_children_per_line(10000)
         self.flow.set_min_children_per_line(1)
         self.flow.set_selection_mode(Gtk.SelectionMode.SINGLE)
         # Single click selects only; double-click (or Enter) opens the viewer.
         self.flow.set_activate_on_single_click(False)
-        # Homogeneous + every child rigidly sized to cell×cell (see _make_thumb)
-        # means FlowBox packs floor(width / (cell + spacing)) columns — i.e. as
-        # many as fit at the current thumbnail size.
-        self.flow.set_homogeneous(True)
-        self.flow.set_row_spacing(14)
-        self.flow.set_column_spacing(14)
-        self.flow.set_margin_top(14)
-        self.flow.set_margin_bottom(14)
-        self.flow.set_margin_start(14)
-        self.flow.set_margin_end(14)
+        # Slot model: every child is a fixed SLOT_WIDTH-wide slot of natural
+        # height, so FlowBox packs floor(width / (SLOT_WIDTH + spacing)) slots
+        # per row and sets each row's height to its tallest slot. NOT
+        # homogeneous — homogeneous would force a uniform height across all rows.
+        self.flow.set_homogeneous(False)
+        self.flow.set_row_spacing(SLOT_SPACING)
+        self.flow.set_column_spacing(SLOT_SPACING)
+        self.flow.set_margin_top(SLOT_SPACING)
+        self.flow.set_margin_bottom(SLOT_SPACING)
+        self.flow.set_margin_start(SLOT_SPACING)
+        self.flow.set_margin_end(SLOT_SPACING)
         self.flow.connect("child-activated", self._on_thumb_activated)
         self.flow.connect("selected-children-changed", self._on_thumb_selected)
 
@@ -518,7 +625,7 @@ class MainWindow(Adw.ApplicationWindow):
             background: transparent;
         }}
         flowboxchild.tadaima-cell {{
-            padding: 6px;
+            padding: 0;
             background: transparent;
             box-shadow: none;
         }}
@@ -556,6 +663,14 @@ class MainWindow(Adw.ApplicationWindow):
         .tadaima-film-thumb-current {{
             outline: 2px solid @accent_color;
             outline-offset: 1px;
+        }}
+        .tadaima-info-panel {{
+            border-left: 1px solid alpha(currentColor, 0.15);
+            background: alpha(currentColor, 0.03);
+        }}
+        .tadaima-info-head {{
+            padding: 8px 8px 8px 12px;
+            border-bottom: 1px solid alpha(currentColor, 0.12);
         }}
         """
         provider = Gtk.CssProvider()
@@ -835,15 +950,21 @@ class MainWindow(Adw.ApplicationWindow):
         fbchild._rec = rec
         fbchild.add_css_class("tadaima-cell")
 
-        cell = self._thumb_zoom
+        # The slot is a fixed width (zoom-scaled from SLOT_WIDTH). Its height is
+        # natural — set by the thumbnail scaled to fit the slot width. FlowBox
+        # then packs floor(pane / (slot + spacing)) slots per row and makes each
+        # row as tall as its tallest slot.
+        slot_w = self._thumb_zoom
 
-        # True aspect from the recorded thumbnail size so the Picture hugs the
-        # visible photo (letterboxing a CONTAIN picture would leave the shadow
-        # floating off the image edges).
+        # Scale the thumbnail so its WIDTH fits the slot; height follows aspect.
+        # (A very tall portrait therefore makes its row taller — as specified.)
         w, h = rec.thumb_w, rec.thumb_h
         if w <= 0 or h <= 0:
-            w, h = cell, cell  # unknown yet (pre-scan) — assume square-ish box
-        scale = min(cell / w, cell / h)
+            w, h = slot_w, slot_w  # unknown yet (pre-scan) — assume square
+        # Cap height at ~2.2x the slot width so a pathological panorama/portrait
+        # doesn't produce an absurd row; still preserves aspect within that.
+        max_h = int(slot_w * 2.2)
+        scale = min(slot_w / w, max_h / h)
         disp_w = max(1, int(round(w * scale)))
         disp_h = max(1, int(round(h * scale)))
 
@@ -865,22 +986,25 @@ class MainWindow(Adw.ApplicationWindow):
         pic.set_tooltip_text(rec.name)
         pic.set_cursor(Gdk.Cursor.new_from_name("pointer"))
 
-        # The wrapper is a rigid cell×cell square with the picture centered
-        # inside it (the picture keeps its true aspect and does NOT expand, so
-        # it is never stretched/cropped). The FlowBoxChild fills the wrapper, so
-        # EVERY child reports the SAME cell×cell size — the condition a
-        # homogeneous FlowBox needs to pack the maximum number of equal columns.
-        wrapper = Gtk.Box()
-        wrapper.set_size_request(cell, cell)
-        wrapper.set_halign(Gtk.Align.FILL)
-        wrapper.set_valign(Gtk.Align.FILL)
-        wrapper.set_hexpand(True)
-        wrapper.set_vexpand(True)
-        wrapper.append(pic)
+        # Slot: fixed width; fills the row's height so a shorter thumbnail is
+        # centred vertically within the (tallest-in-row) row height. The picture
+        # sits centred at its exact scaled size (no expand → FILL never
+        # stretches it). Pinning every slot to the SAME width is what lets
+        # FlowBox pack a consistent number of columns.
+        slot = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
+        slot.set_size_request(slot_w, disp_h)
+        slot.set_halign(Gtk.Align.CENTER)
+        slot.set_valign(Gtk.Align.FILL)
+        pic.set_halign(Gtk.Align.CENTER)
+        pic.set_valign(Gtk.Align.CENTER)
+        pic.set_hexpand(False)
+        pic.set_vexpand(True)   # take the row's spare height so it can centre
+        slot.append(pic)
 
-        fbchild.set_child(wrapper)
-        fbchild.set_halign(Gtk.Align.FILL)
-        fbchild.set_valign(Gtk.Align.START)
+        fbchild.set_child(slot)
+        fbchild.set_size_request(slot_w, -1)
+        fbchild.set_halign(Gtk.Align.START)
+        fbchild.set_valign(Gtk.Align.FILL)
         return fbchild
 
     def _metadata_line(self, rec) -> str:
@@ -903,6 +1027,11 @@ class MainWindow(Adw.ApplicationWindow):
             self.gallery_caption.set_text("")
             self._selected_rec = None
         self._refresh_actions()
+        if (
+            getattr(self, "info_revealer", None) is not None
+            and self.info_revealer.get_reveal_child()
+        ):
+            self._update_info_panel()
 
     def _on_grid_key(self, controller, keyval, keycode, state) -> bool:
         """Enter opens the currently-selected thumbnail in the viewer."""
@@ -1018,7 +1147,7 @@ class MainWindow(Adw.ApplicationWindow):
         self._set_zoom(self._thumb_zoom - 30)
 
     def on_zoom_reset(self) -> None:
-        self._set_zoom(150)  # default: ~10 thumbnails across a 1920px window
+        self._set_zoom(SLOT_WIDTH)  # default slot width
 
     def _set_zoom(self, value: int) -> None:
         value = max(80, min(420, int(value)))
@@ -1238,35 +1367,12 @@ class MainWindow(Adw.ApplicationWindow):
         self._start_background_scan(force=True)
 
     def on_photo_info(self) -> None:
-        rec = getattr(self, "_selected_rec", None)
-        if rec is None:
-            dlg = Adw.MessageDialog(
-                transient_for=self,
-                heading="No photo selected",
-                body="Select a photo to see its information.",
-            )
-            dlg.add_response("ok", "OK")
-            dlg.set_default_response("ok")
-            dlg.present()
-            return
-        md = read_metadata(rec.path)
-        lines = [
-            f"Name:  {rec.name}",
-            f"Date taken:  {md.date_str}",
-            f"Dimensions:  {md.dimensions_str}",
-            f"File size:  {human_size(md.size_bytes)}",
-            "",
-            f"Path:  {rec.path}",
-        ]
-        dlg = Adw.MessageDialog(
-            transient_for=self,
-            heading="Photo information",
-            body="\n".join(lines),
-        )
-        dlg.add_response("ok", "OK")
-        dlg.set_default_response("ok")
-        dlg.set_close_response("ok")
-        dlg.present()
+        # The info sidebar lives in the gallery page; if invoked from the
+        # viewer, return to the gallery first so the panel is visible.
+        if self.stack.get_visible_child_name() == "full":
+            self.on_back()
+        visible = not self.info_revealer.get_reveal_child()
+        self._set_info_visible(visible)
 
     def on_preferences(self) -> None:
         from .gtk4_preferences import PreferencesWindow
