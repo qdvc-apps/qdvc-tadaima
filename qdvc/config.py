@@ -28,6 +28,9 @@ DEFAULTS: dict[str, Any] = {
     "sidebar_width": 300,
     # Density: "compact" (default, tight padding) or "relaxed" (GTK4 default).
     "density": "compact",
+    # Colour scheme: "dark" (default — suits photos), "light", or "auto"
+    # (follow the OS setting).
+    "color_scheme": "dark",
     # UI backend selector (spec parity). Only gtk4 is implemented in Tadaima.
     "ui_backend": "gtk4",
     # Optional user-selected custom icon (absolute .png/.svg path) or None.
@@ -35,6 +38,7 @@ DEFAULTS: dict[str, Any] = {
 }
 
 _VALID_DENSITY = ("compact", "relaxed")
+_VALID_COLOR_SCHEME = ("dark", "light", "auto")
 
 
 def _config_dir() -> Path:
@@ -132,6 +136,16 @@ class Config:
     def density(self, value: str) -> None:
         v = str(value).strip().lower()
         self.set("density", v if v in _VALID_DENSITY else "compact")
+
+    @property
+    def color_scheme(self) -> str:
+        val = str(self.get("color_scheme", "dark")).strip().lower()
+        return val if val in _VALID_COLOR_SCHEME else "dark"
+
+    @color_scheme.setter
+    def color_scheme(self, value: str) -> None:
+        v = str(value).strip().lower()
+        self.set("color_scheme", v if v in _VALID_COLOR_SCHEME else "dark")
 
     @property
     def ui_backend(self) -> str:

@@ -9,7 +9,7 @@ APP_NAME = "QDVC Tadaima"
 __version__ = "0.1.0"
 
 # Themed freedesktop icon name (present on typical GNOME/MATE installs).
-ICON_NAME = "image-x-generic"
+ICON_NAME = "emblem-photos"
 
 # Supported image formats (extensions, lower-case, incl. dot). HEIC support is
 # best-effort and depends on pillow-heif / a working HEIF loader being present.

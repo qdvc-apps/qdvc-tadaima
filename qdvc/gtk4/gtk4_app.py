@@ -27,9 +27,26 @@ class TadaimaApplication(Adw.Application):
     def do_startup(self) -> None:
         Adw.Application.do_startup(self)
         Gtk.Window.set_default_icon_name(ICON_NAME)
-        # Register accelerators from the shared SHORTCUTS table.
+        self.apply_color_scheme(self.config.color_scheme)
+        # Register accelerators from the shared SHORTCUTS table. Arrow-key photo
+        # navigation is handled by a key controller on the full-view page only
+        # (registering it globally would hijack arrow keys in the sidebar and
+        # grid), so it is documented in the table but not bound app-wide.
+        _full_view_only = {"win.prev-photo", "win.next-photo"}
         for sc in SHORTCUTS:
+            if sc.action in _full_view_only:
+                continue
             self.set_accels_for_action(sc.action, [sc.accel])
+
+    def apply_color_scheme(self, scheme: str) -> None:
+        """Map the config value onto Adw.StyleManager. Dark is the default."""
+        mgr = self.get_style_manager()
+        mapping = {
+            "dark": Adw.ColorScheme.FORCE_DARK,
+            "light": Adw.ColorScheme.FORCE_LIGHT,
+            "auto": Adw.ColorScheme.DEFAULT,
+        }
+        mgr.set_color_scheme(mapping.get(scheme, Adw.ColorScheme.FORCE_DARK))
 
     def do_activate(self) -> None:
         if self._window is None:

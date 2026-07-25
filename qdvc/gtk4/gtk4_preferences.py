@@ -23,7 +23,28 @@ class PreferencesWindow(Adw.PreferencesWindow):
         page.set_title("General")
         page.set_icon_name("preferences-system-symbolic")
 
-        # --- Appearance / density -------------------------------------
+        # --- Colour scheme --------------------------------------------
+        theme = Adw.PreferencesGroup()
+        theme.set_title("Appearance")
+        theme.set_description(
+            "Dark is the default — it keeps photos the brightest thing on screen."
+        )
+        self.scheme_row = Adw.ComboRow()
+        self.scheme_row.set_title("Colour scheme")
+        scheme_model = Gtk.StringList()
+        for label in ("Dark", "Light", "Automatic (follow system)"):
+            scheme_model.append(label)
+        self.scheme_row.set_model(scheme_model)
+        self._scheme_values = ("dark", "light", "auto")
+        current = self.config.color_scheme
+        self.scheme_row.set_selected(
+            self._scheme_values.index(current) if current in self._scheme_values else 0
+        )
+        self.scheme_row.connect("notify::selected", self._on_scheme_changed)
+        theme.add(self.scheme_row)
+        page.add(theme)
+
+        # --- Density --------------------------------------------------
         appearance = Adw.PreferencesGroup()
         appearance.set_title("Sidebar")
         appearance.set_description(
@@ -33,7 +54,7 @@ class PreferencesWindow(Adw.PreferencesWindow):
         self.density_row = Adw.ComboRow()
         self.density_row.set_title("Density")
         self.density_row.set_subtitle(
-            "Compact is tuned for laptops and workstations"
+            "Compact is tight; Relaxed is the roomy libadwaita default"
         )
         model = Gtk.StringList()
         model.append("Compact")
@@ -64,3 +85,8 @@ class PreferencesWindow(Adw.PreferencesWindow):
         value = "compact" if row.get_selected() == 0 else "relaxed"
         self.config.density = value
         self.main._apply_density()  # live-apply
+
+    def _on_scheme_changed(self, row, _param) -> None:
+        value = self._scheme_values[row.get_selected()]
+        self.config.color_scheme = value
+        self.main.app.apply_color_scheme(value)  # live-apply

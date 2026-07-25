@@ -11,26 +11,38 @@ thumbnails and its index exclusively to a disposable cache under
 
 - **Master–detail layout.** A resizable sidebar shows a folder hierarchy
   filtered down to just the paths leading to (and beneath) the folders you have
-  added. The main area shows the photos in the selected folder as thumbnails,
-  each with a small drop shadow.
+  added. The main area shows the photos in the selected folder as a wrapping
+  grid of thumbnails, each with a small drop shadow.
+- **Uncropped thumbnails.** Thumbnails keep the original photo's proportions —
+  a portrait stays a portrait. It simply under-fills its grid cell rather than
+  being cropped to a square.
 - **Folder counts.** Every folder shows, on the right, how many images it
   contains recursively (children, grandchildren, and deeper).
 - **Photo-crop folder icons.** A folder that has images directly inside it gets
   a small square crop of one of those photos in place of the plain folder icon,
-  at the same size so the layout stays aligned.
+  at the same size so the layout stays aligned. (Only this tiny icon is
+  cropped; grid thumbnails never are.)
 - **Focus on folder.** Right-click any folder for a menu with **Focus on
   folder** (makes it the root of the view, with its ancestors listed flat and in
   italics above it) and **Locate on disk** (reveals it in your file manager).
   Click a flattened ancestor to re-focus there; the top level `/` is the
   default, unfocused view.
-- **Full-screen view.** Double-click a thumbnail (or press it and it fills the
-  window). Click the back arrow or press `Esc` to return, with your selection
-  intact.
+- **Full view with a filmstrip.** Double-click a thumbnail to fill the window.
+  A filmstrip along the top shows the other photos in the folder; prev/next
+  arrows sit on either side, and the ← / → keys step through photos. The
+  filename and position (e.g. "3 of 40") appear centered in a bar beneath the
+  picture. The window title never changes. Click the back arrow or press `Esc`
+  to return, with your selection intact.
+- **Status bar.** A bar at the bottom names the photo currently being processed
+  during a background scan and updates continuously, so you can see work is
+  progressing.
 - **Background indexing.** On launch, Tadaima quietly scans your folders for
   changes in the background and generates thumbnails as needed.
-- **Density.** The sidebar defaults to a tight **Compact** layout suited to
-  laptops and workstations. Switch to **Relaxed** (libadwaita's default padding)
-  in Preferences.
+- **Appearance.** Dark mode by default (best for photos); switch to Light or
+  Automatic (follow the system) in Preferences.
+- **Density.** The sidebar defaults to a genuinely tight **Compact** layout
+  suited to laptops and workstations. Switch to **Relaxed** (libadwaita's roomy
+  default) in Preferences.
 - **Cache tools.** The main menu offers **Cache status…** and **Regenerate all
   caches**.
 
@@ -75,7 +87,7 @@ Name=QDVC Tadaima
 Comment=Read-only photo browser for folders you choose
 Exec=python3 /full/path/to/qdvc_tadaima.py %U
 Path=/full/path/to
-Icon=image-x-generic
+Icon=emblem-photos
 Terminal=false
 Categories=Graphics;Viewer;GTK;
 StartupNotify=true

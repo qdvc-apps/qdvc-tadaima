@@ -22,20 +22,40 @@ SHORTCUTS: tuple[Shortcut, ...] = (
     Shortcut("win.regenerate-cache", "<Primary>r", "Regenerate all caches", "Cache"),
     Shortcut("win.preferences", "<Primary>comma", "Preferences", "General"),
     Shortcut("win.back", "Escape", "Back to gallery (from full view)", "Navigation"),
+    Shortcut("win.prev-photo", "Left", "Previous photo (in full view)", "Navigation"),
+    Shortcut("win.next-photo", "Right", "Next photo (in full view)", "Navigation"),
     Shortcut("win.quit", "<Primary>q", "Quit", "General"),
 )
 
 
-# Density presets. Values are CSS-ish paddings applied to the sidebar rows.
-# "compact" is Tadaima's opinionated default; "relaxed" restores libadwaita's
-# spacious default padding.
-DENSITY_SPECS: dict[str, dict[str, int]] = {
-    "compact": {"row_pad_v": 2, "row_pad_h": 6, "spacing": 4},
-    "relaxed": {"row_pad_v": 12, "row_pad_h": 12, "spacing": 8},
+# Density presets. Values are paddings (px) applied to sidebar rows via CSS.
+# "compact" is Tadaima's opinionated default and is genuinely tight — much
+# tighter than libadwaita's default. "relaxed" restores the spacious
+# libadwaita default padding.
+#
+# row_pad_v / row_pad_h : vertical / horizontal padding inside each row.
+# indent                : px added per hierarchy level.
+# icon_px               : sidebar folder-icon pixel size.
+# font_scale            : row label font scale (1.0 == theme default).
+DENSITY_SPECS: dict[str, dict[str, float]] = {
+    "compact": {
+        "row_pad_v": 0,
+        "row_pad_h": 4,
+        "indent": 10,
+        "icon_px": 16,
+        "font_scale": 0.9,
+    },
+    "relaxed": {
+        "row_pad_v": 10,
+        "row_pad_h": 12,
+        "indent": 18,
+        "icon_px": 24,
+        "font_scale": 1.0,
+    },
 }
 
 
-def density_spec(name: str) -> dict[str, int]:
+def density_spec(name: str) -> dict[str, float]:
     return DENSITY_SPECS.get(name, DENSITY_SPECS["compact"])
 
 

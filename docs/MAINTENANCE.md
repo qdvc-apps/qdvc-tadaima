@@ -58,8 +58,9 @@ qdvc-tadaima/
 ## Data formats
 
 - **Config**: YAML at `$XDG_CONFIG_HOME/qdvc-tadaima/config.yml`. Keys:
-  `scanned_folders`, `window`, `sidebar_width`, `density`, `ui_backend`,
-  `custom_icon`. Every read supplies a default (no schema migration needed).
+  `scanned_folders`, `window`, `sidebar_width`, `density`, `color_scheme`
+  (`dark`/`light`/`auto`, default `dark`), `ui_backend`, `custom_icon`. Every
+  read supplies a default (no schema migration needed).
 - **Index**: JSON at `$XDG_CACHE_HOME/qdvc-tadaima/index.json`, carrying
   `INDEX_VERSION`. A version mismatch discards the index (it regenerates).
 - **Thumbnails**: PNG under `$XDG_CACHE_HOME/qdvc-tadaima/thumbnails/`, named
@@ -86,6 +87,31 @@ touch a scanned folder.
 data. The window keeps `focus_path` (default `/` = unfocused) and, on
 `set_focus_folder`, re-renders: ancestors flat + italic, the focused node bold,
 and its subtree indented beneath.
+
+## Full view, filmstrip & status bar
+
+- The gallery uses a `Gtk.FlowBox` (wrapping grid, `homogeneous` cells of
+  `THUMB_CELL` px). Each thumbnail is a `Gtk.Picture` with
+  `ContentFit.CONTAIN`, so images keep their aspect ratio and under-fill the
+  cell — they are never cropped. The only cropped image is the 32px square
+  sidebar folder icon.
+- Double-activating a thumbnail builds `_full_images` from the current folder
+  and shows the full-view page. A filmstrip (`Gtk.Box` in a horizontal
+  scroller) plus prev/next header buttons and a `Gtk.EventControllerKey`
+  (←/→) drive `_show_full_at(idx)`. The filename + position show in a caption
+  bar *beneath* the picture; the window title is left untouched.
+- Arrow-key navigation is intentionally *not* a global accelerator (it would
+  hijack the sidebar/grid); it lives on the full page's key controller and is
+  recorded in `SHORTCUTS` for the shortcuts window only.
+- The status bar (`Adw.ToolbarView` bottom bar) is updated from the scan
+  worker via `_post_status` → `GLib.idle_add`, naming each file as it is
+  processed and refreshing on a short interval so it never looks stuck.
+
+## Appearance (colour scheme)
+
+`Config.color_scheme` (`dark`/`light`/`auto`, default `dark`) maps onto
+`Adw.StyleManager.set_color_scheme` in `gtk4_app.apply_color_scheme`.
+Preferences applies it live.
 
 ## The magic numbers
 

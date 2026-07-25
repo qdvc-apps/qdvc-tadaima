@@ -18,6 +18,8 @@ def install_actions(window) -> None:
         ("cache-status", window.on_cache_status),
         ("preferences", window.on_preferences),
         ("back", window.on_back),
+        ("prev-photo", window.on_prev_photo),
+        ("next-photo", window.on_next_photo),
         ("about", window.on_about),
         ("shortcuts", window.on_shortcuts),
         ("quit", window.on_quit),
