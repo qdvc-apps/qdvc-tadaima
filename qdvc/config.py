@@ -28,7 +28,7 @@ DEFAULTS: dict[str, Any] = {
     "sidebar_width": 300,
     # Thumbnail cell size in px (Ctrl +/-/0 zoom; persisted). Default aims for
     # roughly 10 thumbnails across a typical 1920px-wide window.
-    "thumb_zoom": 120,  # == SLOT_WIDTH default
+    "thumb_zoom": 150,  # == SLOT_WIDTH default
     # Density: "compact" (default, tight padding) or "relaxed" (GTK4 default).
     "density": "compact",
     # Colour scheme: "dark" (default — suits photos), "light", or "auto"
@@ -215,9 +215,9 @@ class Config:
     @property
     def thumb_zoom(self) -> int:
         try:
-            return max(80, min(420, int(self.get("thumb_zoom", 120))))
+            return max(80, min(420, int(self.get("thumb_zoom", 150))))
         except (TypeError, ValueError):
-            return 120
+            return 150
 
     @thumb_zoom.setter
     def thumb_zoom(self, value: int) -> None:

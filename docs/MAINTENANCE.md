@@ -210,25 +210,25 @@ stops the programmatic re-expansion from rewriting what it is restoring.
 
 ## Thumbnail grid — the slot model
 
-Each image occupies a fixed-width **slot** (`SLOT_WIDTH`, default 120px, scaled
+Each image occupies a fixed-width **slot** (`SLOT_WIDTH`, default 150px, scaled
 by the Ctrl +/-/0 zoom via `config.thumb_zoom`). The grid is a `Gtk.FlowBox`
 with `homogeneous=False`; every `Gtk.FlowBoxChild` is pinned to exactly
-`slot_w` wide (`set_size_request(slot_w, -1)`) with natural height. Because all
-slots report the *same width*, FlowBox packs `floor(pane / (slot_w + spacing))`
-slots per row, reflows across rows, and sizes each row to its tallest slot.
-Inside a slot the thumbnail is scaled so its width fits `slot_w` (height follows
-aspect, capped at 2.2× to avoid a runaway row) and is centred horizontally and
-vertically; the slot fills the row height so shorter thumbnails centre within
-the tallest-in-row height. The drop shadow / selection border sit on the
-picture, which hugs the image. `homogeneous` is deliberately *off* — it would
-force one uniform height across every row.
+`slot_w` wide with natural height. Because all slots report the *same width*,
+FlowBox packs `floor(pane / (slot_w + spacing))` slots per row, reflows across
+rows, and sizes each row to its tallest slot. The slot caps **both** the width
+and the height of a thumbnail at `slot_w`, so a very tall image scales down to
+fit (becoming narrow) instead of producing a super-tall row. The thumbnail is
+loaded from the **cached thumbnail derivative** (`rec.thumb_path`); the
+full-resolution original is a transient fallback only, used before the scan has
+generated the derivative. The square derivative is never used here (it is a
+centre-crop; grid thumbnails preserve aspect).
 
 A subtle but critical detail that caused repeated trouble: a `Gtk.Picture` fed a
 *file* reports the full image's pixel dimensions as its natural size, and GTK
 lays FlowBox out on that — producing one giant column, per-folder-varying slot
 widths, and a runaway measure/allocate cycle that pegs a CPU core. The fix is to
 load the thumbnail derivative into a `GdkPixbuf`, scale it **once** to fit the
-slot (`scale_simple`, width ≤ `slot_w`, height ≤ 2.2×, never upscaled beyond
+slot (`scale_simple`, width and height both ≤ `slot_w`, never upscaled beyond
 1.0), wrap it in a `Gdk.Texture`, and hand that to the Picture. The Picture's
 natural size is then exactly the scaled size — bounded, stable, no layout thrash.
 Each slot is a `slot_w`-wide box of that natural height with the thumbnail

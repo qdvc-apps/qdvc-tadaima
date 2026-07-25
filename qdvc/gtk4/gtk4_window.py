@@ -36,10 +36,12 @@ from .gtk4_items import FolderItem
 # Filmstrip thumbnail size — matches the 64px square derivative it displays.
 FILMSTRIP_H = 64
 
-# Thumbnail grid: each image occupies a fixed-width SLOT. As many slots as fit
-# are packed per row; rows reflow; each row's height is the tallest slot in it;
-# the thumbnail is centred within its slot. Configurable; 120px for now.
-SLOT_WIDTH = 120
+# Thumbnail grid: each image occupies a SLOT. As many slots as fit are packed
+# per row; rows reflow; each row's height is the tallest slot in it; the
+# thumbnail is centred within its slot. SLOT_WIDTH caps BOTH width and height of
+# a thumbnail, so a very tall image scales down to fit (becoming narrow) rather
+# than producing a super-tall row. Configurable; 150px for now.
+SLOT_WIDTH = 150
 SLOT_SPACING = 12
 
 
@@ -958,13 +960,15 @@ class MainWindow(Adw.ApplicationWindow):
         fbchild.add_css_class("tadaima-cell")
 
         slot_w = self._thumb_zoom
-        max_h = int(slot_w * 2.2)
+        # Cap BOTH dimensions at the slot size: a tall image scales down to fit
+        # (becoming narrow) rather than producing a super-tall row.
+        max_h = slot_w
 
-        # Load the (small) thumbnail derivative and scale it ONCE to fit the
-        # slot, producing a pixbuf of a known, bounded size. Using a pre-scaled
-        # pixbuf in the Picture means the widget's natural size is exactly the
-        # scaled size — GTK never sees the full-resolution image, so there is no
-        # natural-size "leak" that would blow out a column or thrash layout.
+        # Source, in order of preference — always favour the CACHED thumbnail
+        # derivative over the full-resolution original. The square derivative is
+        # deliberately NOT used here: it is a centre-crop, and grid thumbnails
+        # must preserve aspect. The original is only a transient fallback used
+        # before the background scan has generated the thumbnail.
         src = None
         if rec.thumb_path and os.path.exists(rec.thumb_path):
             src = rec.thumb_path
