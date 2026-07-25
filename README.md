@@ -19,12 +19,13 @@ thumbnails and its index exclusively to a disposable cache under
   the photo's real edges. Use `Ctrl +` / `Ctrl -` to make thumbnails larger or
   smaller and `Ctrl 0` to reset; the default shows roughly ten across on a
   typical 1920-wide window.
-- **Full view with a filmstrip.** Double-click a thumbnail to fill the window.
-  A filmstrip of square thumbnails runs along the top; prev/next arrows sit on
-  either side, and the ← / → keys step through photos. The filename and
-  position (e.g. "3 of 40") appear centered in a bar beneath the picture. The
-  window title never changes. Click **Back to Library** (top-left) or press
-  `Esc` to return, with your selection intact.
+- **Full view with a filmstrip.** Single-click a thumbnail to select it;
+  double-click (or select and press `Enter`) to open it full-window. A filmstrip
+  of square thumbnails runs along the top; prev/next arrows sit on either side,
+  and the ← / → keys step through photos. The filename and position (e.g.
+  "3 of 40") appear centered in a bar beneath the picture. The window title
+  never changes. Click **Back to Library** (top-left) or press `Esc` to return,
+  with your selection intact.
 - **Selected-photo filename.** In the main view, the name of the currently
   selected photo shows in a bar just above the status bar.
 - **Folder counts.** Every folder shows, on the right, how many images it
@@ -43,11 +44,15 @@ thumbnails and its index exclusively to a disposable cache under
   during a background scan and updates continuously, so you can see work is
   progressing.
 - **Managing folders.** Add and remove scanned folders from the **Scanned
-  folders** window (main menu, or `Ctrl+O`). Press `Esc` to close it.
+  folders** window (main menu, or `Ctrl+O`). Changes are staged and only take
+  effect when you press **Save**; press `Esc` or **Cancel** to discard. Adding a
+  folder that contains one already listed absorbs the child (the parent covers
+  it), and existing thumbnails are reused rather than regenerated.
 - **Background indexing.** On launch, Tadaima quietly scans your folders for
-  changes in the background, generating thumbnails as needed. Subfolders and
-  photos appear in the UI as soon as they are found and processed, rather than
-  waiting for the whole scan to finish.
+  changes in the background, generating thumbnails only for images that don't
+  already have them. Subfolders and photos appear in the UI as soon as they are
+  found and processed, and you can browse and expand folders freely while a scan
+  runs.
 - **Appearance.** Dark mode by default (best for photos); switch to Light or
   Automatic (follow the system) in Preferences.
 - **Density.** The sidebar defaults to a genuinely tight **Compact** layout
@@ -117,5 +122,8 @@ desktop-file-validate ~/.local/share/applications/qdvc-tadaima.desktop
 - Your photo folders are opened **read-only**. Tadaima never writes to them.
 - Preferences: `$XDG_CONFIG_HOME/qdvc-tadaima/config.yml`
   (`~/.config/qdvc-tadaima/config.yml`).
-- Cache (index + thumbnails): `$XDG_CACHE_HOME/qdvc-tadaima/`
-  (`~/.cache/qdvc-tadaima/`). Safe to delete at any time; it regenerates.
+- Cache (index + derivatives): `$XDG_CACHE_HOME/qdvc-tadaima/`
+  (`~/.cache/qdvc-tadaima/`), with generated images under a `derivatives/`
+  subfolder. Safe to delete at any time; it regenerates. Files whose contents
+  are not a real supported image (e.g. macOS `._name.jpg` sidecar files) are
+  skipped during scanning even if their extension matches.

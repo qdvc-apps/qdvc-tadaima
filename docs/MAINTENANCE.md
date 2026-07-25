@@ -63,14 +63,15 @@ qdvc-tadaima/
   read supplies a default (no schema migration needed).
 - **Index**: JSON at `$XDG_CACHE_HOME/qdvc-tadaima/index.json`, carrying
   `INDEX_VERSION`. A version mismatch discards the index (it regenerates).
-- **Thumbnails**: under `$XDG_CACHE_HOME/qdvc-tadaima/thumbnails/`, named
+- **Derivatives**: under `$XDG_CACHE_HOME/qdvc-tadaima/derivatives/`, named
   `<sha1-of-path>.<kind>.<ext>`. Small derivatives (`thumb`, `square`) are
-  low-quality JPEGs (`SMALL_JPEG_QUALITY`) to save disk space; the `screen`
-  preview is a higher-quality JPEG (`SCREEN_JPEG_QUALITY`). A `square`
-  derivative (now 64×64) is generated for *every* image — it drives both the
-  sidebar folder icons and the filmstrip. The thumbnail's true scaled
-  dimensions (`thumb_w`/`thumb_h`) are stored in the index so the grid can size
-  each thumbnail widget to hug the image. `INDEX_VERSION` is 3.
+  low-quality JPEGs (`SMALL_JPEG_QUALITY`); the `screen` preview is a
+  higher-quality JPEG (`SCREEN_JPEG_QUALITY`). A 64×64 `square` is generated for
+  *every* image (sidebar icons + filmstrip). Thumbnail dimensions
+  (`thumb_w`/`thumb_h`) are stored so the grid can size each widget to hug the
+  image. `INDEX_VERSION` is 3. On a normal launch, `has_all_derivatives` gates
+  regeneration so only images actually missing a derivative are (re)processed —
+  never the whole library.
 
 Writes (config, index) are atomic (temp file + `os.replace`). No writes ever
 touch a scanned folder.
@@ -116,21 +117,31 @@ expands the selected folder and ← collapses it (`_on_sidebar_key`).
 
 ## Live updates during a scan
 
-`_scan_worker` runs off the main thread. It calls `_live_refresh` via
-`GLib.idle_add` right after `sync_index` (so subfolders appear as soon as the
-walk finds them) and then again every `LIVE_REFRESH_SECONDS` while thumbnails are
-generated (so images appear as they are processed). `_live_refresh` rebuilds the
-tree from the current index and re-renders the open folder, preserving selection.
+`_scan_worker` runs off the main thread. It calls `_live_refresh(True)` via
+`GLib.idle_add` right after `sync_index` (structure may have changed, so the
+sidebar tree is rebuilt once and subfolders appear). Every subsequent mid-scan
+refresh, and the end-of-scan refresh, use `_live_refresh(rebuild_tree=False)`,
+which refreshes only the open folder's thumbnail grid and does **not** rebuild
+the tree store — rebuilding it mid-scan collapsed whatever the user had expanded
+(the "retreat" bug) and blocked digging into folders during a scan. Regeneration
+is gated by `has_all_derivatives`, so a normal launch only (re)generates for
+images actually missing a derivative — never the whole library.
 
-- The gallery uses a `Gtk.FlowBox` (wrapping grid, homogeneous cells sized to
-  `self._thumb_zoom`). Each thumbnail's `Gtk.Picture` is sized to the image's
-  *true* scaled dimensions (from `thumb_w`/`thumb_h`) and placed, centered, in a
-  fixed square cell wrapper. This is deliberate: a `CONTAIN` picture in a fixed
-  box letterboxes the image, so a `box-shadow` on it would float off the photo's
-  edges. Sizing the widget to hug the image puts the drop shadow and selection
-  border (`picture.tadaima-thumb` / `…:selected picture.tadaima-thumb`) on the
-  photo's real edges. Thumbnails are never cropped; portraits under-fill the
-  cell.
+- The gallery uses a `Gtk.FlowBox` (wrapping grid). It is **non-homogeneous**,
+  `halign=FILL`, `hexpand=True`, inside a `ScrolledWindow` with
+  `propagate_natural_width(False)`, so it uses the whole viewport width and
+  packs as many columns as fit rather than clamping the column count.
+- Each thumbnail's `Gtk.Picture` is sized to the image's *true* scaled
+  dimensions (from `thumb_w`/`thumb_h`) and centered in a fixed square cell
+  wrapper. This is deliberate: a `CONTAIN` picture in a fixed box letterboxes
+  the image, so a `box-shadow` on it would float off the photo's edges. Sizing
+  the widget to hug the image puts the drop shadow and selection border
+  (`picture.tadaima-thumb` / `…:selected picture.tadaima-thumb`) on the photo's
+  real edges. Thumbnails are never cropped; portraits under-fill the cell.
+- **Selection vs. open.** The FlowBox uses `activate-on-single-click(False)`:
+  a single click only selects; double-click activates. `_on_grid_key` opens the
+  selected thumbnail on `Enter`. Activation builds `_full_images` and shows the
+  full-view page.
 - **Zoom.** `Ctrl +` / `Ctrl -` / `Ctrl 0` (`on_zoom_in/out/reset`) change
   `self._thumb_zoom` in 30px steps (clamped 80–420, persisted as
   `config.thumb_zoom`); the default 150 gives roughly ten thumbnails across a
@@ -138,17 +149,32 @@ tree from the current index and re-renders the open folder, preserving selection
   `gtk4_app` so the shortcuts work regardless of keyboard layout.
 - A filename bar for the currently-selected photo sits above the status bar in
   the main view (`gallery_caption`), mirroring the caption in the full viewer.
-- Double-activating a thumbnail builds `_full_images` from the current folder
-  and shows the full-view page. A filmstrip (`Gtk.Box` in a horizontal
-  scroller) plus prev/next header buttons and a `Gtk.EventControllerKey`
+- The full view: a filmstrip (`Gtk.Box` in a horizontal scroller) of square
+  derivatives plus prev/next header buttons and a `Gtk.EventControllerKey`
   (←/→) drive `_show_full_at(idx)`. The filename + position show in a caption
   bar *beneath* the picture; the window title is left untouched.
-- Arrow-key navigation is intentionally *not* a global accelerator (it would
-  hijack the sidebar/grid); it lives on the full page's key controller and is
-  recorded in `SHORTCUTS` for the shortcuts window only.
+- Arrow-key photo navigation is intentionally *not* a global accelerator (it
+  would hijack the sidebar/grid); it lives on the full page's key controller and
+  is recorded in `SHORTCUTS` for the shortcuts window only.
 - The status bar (`Adw.ToolbarView` bottom bar) is updated from the scan
   worker via `_post_status` → `GLib.idle_add`, naming each file as it is
   processed and refreshing on a short interval so it never looks stuck.
+
+## Scanned folders: staged edits + absorption
+
+The Scanned folders window edits a *pending* list (`_pending_folders`), not the
+live config. **Save** commits it through `Config.set_scanned_folders`, which runs
+`normalize_scanned_folders` (pure): dedupe, then drop any folder that lies within
+another (absorption — a parent absorbs its children). A scan starts only for
+coverage that genuinely expanded; pure removals/absorption trigger none. Because
+derivatives are keyed by each image's absolute path, an absorbed child's cached
+derivatives are reused unchanged. Cancel/Esc discard.
+
+## Content sniffing
+
+`scan_images` accepts a file only if the extension matches *and*
+`looks_like_image` confirms the header bytes (JPEG/PNG/HEIF signatures),
+explicitly rejecting AppleDouble `._name.jpg` sidecars.
 
 ## Appearance (colour scheme)
 

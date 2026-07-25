@@ -97,7 +97,89 @@ def test_index_sync_and_thumbnail():
         assert img_path in removed2
 
 
+def test_absorption_normalization():
+    from qdvc.config import normalize_scanned_folders
+
+    # Child absorbed by parent.
+    out = normalize_scanned_folders(
+        ["/home/james/photos", "/home/james", "/other"]
+    )
+    assert "/home/james" in out
+    assert "/home/james/photos" not in out
+    assert "/other" in out
+    # Order preserved by first appearance among survivors.
+    assert out == ["/home/james", "/other"]
+    # Dedup.
+    assert normalize_scanned_folders(["/a", "/a"]) == ["/a"]
+    # Sibling-prefix is NOT absorption (/home/jamesX not under /home/james).
+    out2 = normalize_scanned_folders(["/home/james", "/home/jamesX"])
+    assert set(out2) == {"/home/james", "/home/jamesX"}
+
+
+def test_content_sniffing_rejects_non_images():
+    import importlib
+    import tempfile
+
+    import qdvc.cache as cache_mod
+
+    from PIL import Image
+
+    with tempfile.TemporaryDirectory() as tmp:
+        os.environ["XDG_CACHE_HOME"] = tmp
+        importlib.reload(cache_mod)
+        photos = os.path.join(tmp, "p")
+        os.makedirs(photos)
+
+        # A real JPEG.
+        real = os.path.join(photos, "real.jpg")
+        Image.new("RGB", (10, 10), (1, 2, 3)).save(real)
+        # An AppleDouble sidecar with a .jpg name but non-image content.
+        fake = os.path.join(photos, "._real.jpg")
+        with open(fake, "wb") as fh:
+            fh.write(b"\x00\x05\x16\x07" + b"\x00" * 40)
+        # A text file renamed to .png.
+        fake2 = os.path.join(photos, "notes.png")
+        with open(fake2, "wb") as fh:
+            fh.write(b"hello this is not an image")
+
+        found = cache_mod.scan_images([photos])
+        assert real in found
+        assert fake not in found
+        assert fake2 not in found
+        assert cache_mod.looks_like_image(real) is True
+        assert cache_mod.looks_like_image(fake) is False
+
+
+def test_has_all_derivatives_and_dir_name():
+    import importlib
+    import tempfile
+
+    import qdvc.cache as cache_mod
+
+    from PIL import Image
+
+    with tempfile.TemporaryDirectory() as tmp:
+        os.environ["XDG_CACHE_HOME"] = tmp
+        importlib.reload(cache_mod)
+        # Derivatives live under a folder named exactly "derivatives".
+        assert cache_mod.derivatives_dir().name == "derivatives"
+
+        photos = os.path.join(tmp, "p")
+        os.makedirs(photos)
+        p = os.path.join(photos, "one.jpg")
+        Image.new("RGB", (40, 30), (9, 9, 9)).save(p)
+        idx = cache_mod.Index()
+        cache_mod.sync_index(idx, [photos])
+        rec = idx.records[p]
+        assert cache_mod.has_all_derivatives(rec) is False  # not generated yet
+        cache_mod.generate_derivatives(rec)
+        assert cache_mod.has_all_derivatives(rec) is True
+
+
 if __name__ == "__main__":
     test_config_roundtrip_and_validation()
     test_index_sync_and_thumbnail()
+    test_absorption_normalization()
+    test_content_sniffing_rejects_non_images()
+    test_has_all_derivatives_and_dir_name()
     print("ALL CORE TESTS PASSED")

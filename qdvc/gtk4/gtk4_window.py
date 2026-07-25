@@ -20,9 +20,11 @@ from ..cache import (
     cache_status,
     clear_cache,
     generate_derivatives,
+    has_all_derivatives,
     human_bytes,
     sync_index,
 )
+from ..config import normalize_scanned_folders
 from ..models import FolderNode
 from ..platform_utils import reveal_in_file_manager
 from ..tree import ancestor_chain, build_tree, find_node
@@ -32,6 +34,15 @@ from .gtk4_items import FolderItem
 
 # Filmstrip thumbnail size — matches the 64px square derivative it displays.
 FILMSTRIP_H = 64
+
+
+def _within(ancestor: str, descendant: str) -> bool:
+    """True if *descendant* is *ancestor* or lies beneath it."""
+    a = os.path.normpath(ancestor)
+    d = os.path.normpath(descendant)
+    if a == d:
+        return True
+    return d.startswith(a.rstrip(os.sep) + os.sep)
 # How often the scan worker refreshes the visible tree/grid while running.
 LIVE_REFRESH_SECONDS = 0.6
 
@@ -297,10 +308,17 @@ class MainWindow(Adw.ApplicationWindow):
 
         self.flow = Gtk.FlowBox()
         self.flow.set_valign(Gtk.Align.START)
-        self.flow.set_max_children_per_line(100)
+        self.flow.set_halign(Gtk.Align.FILL)
+        self.flow.set_hexpand(True)
+        self.flow.set_max_children_per_line(1000)
         self.flow.set_min_children_per_line(1)
         self.flow.set_selection_mode(Gtk.SelectionMode.SINGLE)
-        self.flow.set_homogeneous(True)
+        # Single click selects only; double-click (or Enter) opens the viewer.
+        self.flow.set_activate_on_single_click(False)
+        # Non-homogeneous: each cell is its own fixed square; homogeneous mode
+        # can wrongly clamp the column count. FILL + hexpand lets the box use the
+        # whole viewport width so it packs as many columns as fit.
+        self.flow.set_homogeneous(False)
         self.flow.set_row_spacing(14)
         self.flow.set_column_spacing(14)
         self.flow.set_margin_top(14)
@@ -309,6 +327,11 @@ class MainWindow(Adw.ApplicationWindow):
         self.flow.set_margin_end(14)
         self.flow.connect("child-activated", self._on_thumb_activated)
         self.flow.connect("selected-children-changed", self._on_thumb_selected)
+
+        # Enter opens the selected thumbnail in the viewer.
+        fkey = Gtk.EventControllerKey()
+        fkey.connect("key-pressed", self._on_grid_key)
+        self.flow.add_controller(fkey)
 
         self.detail_placeholder = Adw.StatusPage()
         self.detail_placeholder.set_icon_name("emblem-photos-symbolic")
@@ -319,6 +342,9 @@ class MainWindow(Adw.ApplicationWindow):
 
         self.detail_stack = Gtk.Stack()
         self.detail_scroller.set_child(self.flow)
+        # Don't let the FlowBox's small natural width shrink the pane; let it
+        # fill whatever width the paned gives it (so columns aren't capped).
+        self.detail_scroller.set_propagate_natural_width(False)
         self.detail_stack.add_named(self.detail_scroller, "grid")
         self.detail_stack.add_named(self.detail_placeholder, "empty")
         self.detail_stack.set_visible_child_name("empty")
@@ -520,6 +546,38 @@ class MainWindow(Adw.ApplicationWindow):
                 return row, i
         return None, -1
 
+    def _snapshot_expanded(self) -> set[str]:
+        """Absolute paths of every currently-expanded row in the tree."""
+        expanded: set[str] = set()
+        n = self._tree_model.get_n_items()
+        for i in range(n):
+            row = self._tree_model.get_item(i)
+            if row is not None and row.get_expanded():
+                item = row.get_item()
+                expanded.add(os.path.normpath(item.node.path))
+        return expanded
+
+    def _restore_expanded(self, paths: set[str]) -> bool:
+        """Expand rows for *paths*, top-down so parents materialise children
+        before we reach them. Repeats until no further expansion is possible
+        (each pass can reveal a new, deeper level)."""
+        changed = True
+        guard = 0
+        while changed and guard < 64:
+            changed = False
+            guard += 1
+            n = self._tree_model.get_n_items()
+            for i in range(n):
+                row = self._tree_model.get_item(i)
+                if row is None:
+                    continue
+                item = row.get_item()
+                p = os.path.normpath(item.node.path)
+                if p in paths and row.is_expandable() and not row.get_expanded():
+                    row.set_expanded(True)
+                    changed = True
+        return False
+
     def _on_sidebar_key(self, controller, keyval, keycode, state) -> bool:
         """Right arrow expands the selected folder, Left collapses it."""
         row = self._selection.get_selected_item()  # Gtk.TreeListRow or None
@@ -545,9 +603,11 @@ class MainWindow(Adw.ApplicationWindow):
         item: FolderItem = row.get_item()
         node = item.node
         if item.style == "ancestor":
-            # Clicking a flattened ancestor (incl. "/") re-focuses there.
+            # Clicking a flattened ancestor (incl. "/") re-focuses there while
+            # keeping every currently-visible folder visible in its current
+            # open/closed state — the whole hierarchy just shifts right.
             print(f"[tadaima] re-focus via ancestor click: {node.path}", flush=True)
-            self.set_focus_folder(node.path)
+            self.set_focus_folder(node.path, preserve_expansion=True)
             return
         self.selected_folder = node
         self._show_folder_photos(node)
@@ -614,14 +674,37 @@ class MainWindow(Adw.ApplicationWindow):
         popover.connect("closed", lambda p: p.unparent())
         popover.popup()
 
-    def set_focus_folder(self, path: str) -> None:
+    def set_focus_folder(self, path: str, preserve_expansion: bool = False) -> None:
         norm = os.path.normpath(path)
-        print(f"[tadaima] set_focus_folder -> {norm}", flush=True)
+        print(
+            f"[tadaima] set_focus_folder -> {norm} "
+            f"(preserve_expansion={preserve_expansion})",
+            flush=True,
+        )
+
+        # Snapshot what's expanded now, plus the chain from the new focus down to
+        # the old focus, so the same folders stay visible after the shift.
+        keep_expanded: set[str] = set()
+        if preserve_expansion:
+            keep_expanded = self._snapshot_expanded()
+            old_focus = self.focus_path
+            if self.tree_root is not None:
+                for anc in ancestor_chain(self.tree_root, old_focus):
+                    if _within(norm, anc.path):
+                        keep_expanded.add(os.path.normpath(anc.path))
+            keep_expanded.add(os.path.normpath(old_focus))
+
         self.focus_path = norm
         self._populate_sidebar()
-        # Expand the focused node so its children are immediately visible —
-        # otherwise focusing a folder can look like nothing happened.
-        GLib.idle_add(self._expand_focused_row)
+
+        if preserve_expansion and keep_expanded:
+            # Also expand the new focus so the chain is reachable.
+            keep_expanded.add(norm)
+            GLib.idle_add(self._restore_expanded, keep_expanded)
+        else:
+            # Drill-down focus: just open the focused node so it's obvious.
+            GLib.idle_add(self._expand_focused_row)
+
         self._set_status(
             f"Focused on {os.path.basename(norm) or '/'}", transient=True
         )
@@ -697,6 +780,10 @@ class MainWindow(Adw.ApplicationWindow):
         wrapper.append(pic)
 
         fbchild.set_child(wrapper)
+        fbchild.set_halign(Gtk.Align.CENTER)
+        fbchild.set_valign(Gtk.Align.START)
+        fbchild.set_hexpand(False)
+        fbchild.set_vexpand(False)
         return fbchild
 
     def _on_thumb_selected(self, flow) -> None:
@@ -708,6 +795,15 @@ class MainWindow(Adw.ApplicationWindow):
         else:
             self.selected_image_path = None
             self.gallery_caption.set_text("")
+
+    def _on_grid_key(self, controller, keyval, keycode, state) -> bool:
+        """Enter opens the currently-selected thumbnail in the viewer."""
+        if keyval in (Gdk.KEY_Return, Gdk.KEY_KP_Enter):
+            sel = self.flow.get_selected_children()
+            if sel:
+                self._on_thumb_activated(self.flow, sel[0])
+                return True
+        return False
 
     def _on_thumb_activated(self, flow, child) -> None:
         rec = getattr(child, "_rec", None)
@@ -835,7 +931,9 @@ class MainWindow(Adw.ApplicationWindow):
         self._refresh_actions()
 
     def on_add_folder(self) -> None:
-        """Kept for the file-picker flow used by the Scanned folders window."""
+        """Add a folder to the *pending* list in the Scanned folders window.
+
+        Nothing is committed or scanned until the user presses Save."""
         dialog = Gtk.FileDialog()
         dialog.set_title("Add a folder to scan (read-only)")
 
@@ -847,33 +945,49 @@ class MainWindow(Adw.ApplicationWindow):
             if folder is None:
                 return
             path = folder.get_path()
-            if path and self.config.add_scanned_folder(path):
-                self._rebuild_tree()
-                self._start_background_scan()
-                if self._scanned_folders_win is not None:
-                    self._refresh_scanned_folders_window()
+            if not path:
+                return
+            norm = os.path.normpath(path)
+            if norm not in self._pending_folders:
+                self._pending_folders.append(norm)
+                self._mark_folders_dirty()
+                self._refresh_scanned_folders_window()
 
         dialog.select_folder(self, None, done)
 
     def on_manage_folders(self) -> None:
-        # Bring an existing window forward rather than stacking duplicates.
         if self._scanned_folders_win is not None:
             self._scanned_folders_win.present()
             return
 
+        # Working copy of the committed list; edits stay here until Save.
+        self._pending_folders = list(self.config.scanned_folders)
+        self._folders_dirty = False
+
         win = Adw.Window()
         win.set_modal(True)
         win.set_transient_for(self)
-        win.set_default_size(560, 420)
+        win.set_default_size(600, 460)
         win.set_title("Scanned folders")
         self._scanned_folders_win = win
 
         tv = Adw.ToolbarView()
         header = Adw.HeaderBar()
+        header.set_show_end_title_buttons(False)
+
         add_btn = Gtk.Button(label="Add…")
-        add_btn.add_css_class("suggested-action")
         add_btn.connect("clicked", lambda b: self.on_add_folder())
         header.pack_start(add_btn)
+
+        cancel_btn = Gtk.Button(label="Cancel")
+        cancel_btn.connect("clicked", lambda b: win.close())
+        header.pack_end(cancel_btn)
+
+        self._folders_save_btn = Gtk.Button(label="Save")
+        self._folders_save_btn.add_css_class("suggested-action")
+        self._folders_save_btn.set_sensitive(False)
+        self._folders_save_btn.connect("clicked", lambda b: self._save_scanned_folders())
+        header.pack_end(self._folders_save_btn)
         tv.add_top_bar(header)
 
         self._scanned_group_holder = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
@@ -886,7 +1000,7 @@ class MainWindow(Adw.ApplicationWindow):
         tv.set_content(clamp)
         win.set_content(tv)
 
-        # Esc closes the window.
+        # Esc closes (discards) the window.
         key = Gtk.EventControllerKey()
         key.connect(
             "key-pressed",
@@ -899,6 +1013,11 @@ class MainWindow(Adw.ApplicationWindow):
 
         self._refresh_scanned_folders_window()
         win.present()
+
+    def _mark_folders_dirty(self) -> None:
+        self._folders_dirty = True
+        if getattr(self, "_folders_save_btn", None) is not None:
+            self._folders_save_btn.set_sensitive(True)
 
     def _on_scanned_window_closed(self, win) -> bool:
         self._scanned_folders_win = None
@@ -914,30 +1033,61 @@ class MainWindow(Adw.ApplicationWindow):
 
         group = Adw.PreferencesGroup()
         group.set_title("Folders scanned for photos")
-        group.set_description("These folders are only ever read, never modified.")
+        group.set_description(
+            "These folders are only ever read, never modified. "
+            "Changes are applied when you press Save. Adding a folder that "
+            "contains one already listed absorbs the child."
+        )
 
-        folders = self.config.scanned_folders
-        if not folders:
+        # Preview absorption so the user sees what Save will keep.
+        preview = normalize_scanned_folders(self._pending_folders)
+        absorbed = [p for p in self._pending_folders if p not in preview]
+
+        if not self._pending_folders:
             row = Adw.ActionRow()
             row.set_title("No folders added yet")
             group.add(row)
-        for path in folders:
+        for path in self._pending_folders:
             row = Adw.ActionRow()
             row.set_title(os.path.basename(path) or path)
-            row.set_subtitle(path)
+            if path in absorbed:
+                row.set_subtitle(f"{path}\nWill be absorbed by a parent folder on Save")
+                row.add_css_class("dim-label")
+            else:
+                row.set_subtitle(path)
             remove = Gtk.Button()
             remove.set_icon_name("user-trash-symbolic")
             remove.set_valign(Gtk.Align.CENTER)
             remove.add_css_class("flat")
-            remove.connect("clicked", lambda b, p=path: self._remove_folder(p))
+            remove.connect("clicked", lambda b, p=path: self._remove_pending_folder(p))
             row.add_suffix(remove)
             group.add(row)
         holder.append(group)
 
-    def _remove_folder(self, path: str) -> None:
-        self.config.remove_scanned_folder(path)
+    def _remove_pending_folder(self, path: str) -> None:
+        if path in self._pending_folders:
+            self._pending_folders.remove(path)
+            self._mark_folders_dirty()
+            self._refresh_scanned_folders_window()
+
+    def _save_scanned_folders(self) -> None:
+        """Commit the pending list (with absorption) and scan only genuinely
+        new coverage. Existing derivatives are reused automatically because they
+        are keyed by each image's absolute path."""
+        before = set(self.config.scanned_folders)
+        self.config.set_scanned_folders(self._pending_folders)
+        after = set(self.config.scanned_folders)
+        print(f"[tadaima] scanned folders saved: {sorted(after)}", flush=True)
+
         self._rebuild_tree()
-        self._refresh_scanned_folders_window()
+        if self._scanned_folders_win is not None:
+            self._scanned_folders_win.close()
+
+        # Only scan if coverage actually expanded (a new root not within the old
+        # set). Pure removals/absorption need no scan.
+        new_coverage = [p for p in after if p not in before]
+        if new_coverage:
+            self._start_background_scan()
 
     def on_cache_status(self) -> None:
         st = cache_status(self.index)
@@ -1022,7 +1172,16 @@ class MainWindow(Adw.ApplicationWindow):
             new_or_changed, _removed = sync_index(self.index, roots)
             GLib.idle_add(self._live_refresh)
 
-            work = new_or_changed if not force else list(self.index.records.values())
+            if force:
+                work = list(self.index.records.values())
+            else:
+                # Only (re)generate derivatives that are actually missing —
+                # never regenerate the whole library on a normal launch.
+                work = [
+                    rec
+                    for rec in self.index.records.values()
+                    if not has_all_derivatives(rec)
+                ]
             total = len(work)
             last_status = 0.0
             last_refresh = time.monotonic()
@@ -1035,7 +1194,9 @@ class MainWindow(Adw.ApplicationWindow):
                 # sidebar icon and the filmstrip).
                 generate_derivatives(rec, want_square=True)
                 if now - last_refresh > LIVE_REFRESH_SECONDS:
-                    GLib.idle_add(self._live_refresh)
+                    # Grid-only refresh: do NOT rebuild the sidebar tree, or the
+                    # user's expanded subfolders would collapse mid-scan.
+                    GLib.idle_add(self._live_refresh, False)
                     last_refresh = now
 
             self._post_status("Saving index…")
@@ -1057,14 +1218,26 @@ class MainWindow(Adw.ApplicationWindow):
             self.status_label.set_text(self._status_default)
         return False
 
-    def _live_refresh(self) -> bool:
-        """Rebuild the tree from the current index and refresh the open folder's
-        thumbnails, preserving selection and focus. Called on the main thread
-        while a scan is still running."""
+    def _live_refresh(self, rebuild_tree: bool = True) -> bool:
+        """Refresh the UI from the current index during a running scan.
+
+        When *rebuild_tree* is True (structure may have changed, e.g. right
+        after the folder walk) the sidebar tree is rebuilt. Otherwise only the
+        open folder's thumbnail grid is refreshed — rebuilding the tree store
+        mid-scan would collapse whatever subfolders the user has expanded (and
+        made it impossible to dig into folders while derivatives generate)."""
         prev = self.selected_folder.path if self.selected_folder else None
-        self.tree_root = build_tree(list(self.index.records.values()),
-                                    self.config.scanned_folders)
-        self._populate_sidebar()
+        if rebuild_tree:
+            self.tree_root = build_tree(
+                list(self.index.records.values()), self.config.scanned_folders
+            )
+            self._populate_sidebar()
+        else:
+            # Keep the tree_root's data current so counts/icons are fresh, but
+            # do NOT touch the tree store (that would reset expansion).
+            self.tree_root = build_tree(
+                list(self.index.records.values()), self.config.scanned_folders
+            )
         if prev and self.tree_root:
             node = find_node(self.tree_root, prev)
             if node:
@@ -1077,7 +1250,8 @@ class MainWindow(Adw.ApplicationWindow):
         n = len(self.index.records)
         self._status_default = f"{format_count(n)} photos indexed"
         self.status_label.set_text(self._status_default)
-        self._live_refresh()
+        # Grid-only refresh so the user's expanded folders stay expanded.
+        self._live_refresh(rebuild_tree=False)
         self._refresh_actions()
         return False
 

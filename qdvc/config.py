@@ -44,6 +44,37 @@ _VALID_DENSITY = ("compact", "relaxed")
 _VALID_COLOR_SCHEME = ("dark", "light", "auto")
 
 
+def _is_ancestor_of(ancestor: str, descendant: str) -> bool:
+    """True if *ancestor* is a strict parent directory of *descendant*."""
+    if ancestor == descendant:
+        return False
+    a = ancestor.rstrip(os.sep) + os.sep
+    return descendant.startswith(a)
+
+
+def normalize_scanned_folders(paths: list[str]) -> list[str]:
+    """Dedupe and apply absorption: drop any folder that lies within another.
+
+    E.g. adding ``/home/james`` when ``/home/james/photos`` is already scanned
+    absorbs the child — only ``/home/james`` remains. Order is preserved by
+    first appearance. Cached derivatives are keyed by each image's absolute
+    path, so they are reused regardless of which surviving root now covers them.
+    """
+    seen: set[str] = set()
+    unique: list[str] = []
+    for p in paths:
+        norm = os.path.normpath(p)
+        if norm not in seen:
+            seen.add(norm)
+            unique.append(norm)
+    result: list[str] = []
+    for p in unique:
+        if any(_is_ancestor_of(other, p) for other in unique):
+            continue  # absorbed by an ancestor also in the list
+        result.append(p)
+    return result
+
+
 def _config_dir() -> Path:
     base = os.environ.get("XDG_CONFIG_HOME") or os.path.expanduser("~/.config")
     return Path(base) / _CONFIG_DIRNAME
@@ -118,7 +149,7 @@ class Config:
         if norm in folders:
             return False
         folders.append(norm)
-        self.set("scanned_folders", folders)
+        self.set("scanned_folders", normalize_scanned_folders(folders))
         return True
 
     def remove_scanned_folder(self, path: str) -> bool:
@@ -129,6 +160,13 @@ class Config:
         folders.remove(norm)
         self.set("scanned_folders", folders)
         return True
+
+    def set_scanned_folders(self, paths: list[str]) -> None:
+        """Replace the whole scanned-folders list, applying absorption: any
+        folder that is a descendant of another in the list is dropped (its
+        ancestor covers it). Used by the Scanned folders window's Save."""
+        norm = [os.path.normpath(os.path.expanduser(p)) for p in paths]
+        self.set("scanned_folders", normalize_scanned_folders(norm))
 
     @property
     def density(self) -> str:

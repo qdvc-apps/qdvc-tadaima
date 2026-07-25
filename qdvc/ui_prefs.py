@@ -42,7 +42,7 @@ SHORTCUTS: tuple[Shortcut, ...] = (
 # font_scale            : row label font scale (1.0 == theme default).
 DENSITY_SPECS: dict[str, dict[str, float]] = {
     "compact": {
-        "row_pad_v": 0,
+        "row_pad_v": 1,
         "row_pad_h": 4,
         "indent": 10,
         "icon_px": 16,

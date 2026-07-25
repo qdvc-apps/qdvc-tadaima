@@ -49,7 +49,7 @@ else:  # pragma: no cover
 
 _CACHE_DIRNAME = "qdvc-tadaima"
 _INDEX_FILENAME = "index.json"
-_THUMBS_SUBDIR = "thumbnails"
+_DERIVATIVES_SUBDIR = "derivatives"
 
 
 def cache_dir() -> Path:
@@ -58,9 +58,9 @@ def cache_dir() -> Path:
     return Path(base) / _CACHE_DIRNAME
 
 
-def thumbs_dir() -> Path:
-    d = cache_dir() / _THUMBS_SUBDIR
-    return d
+def derivatives_dir() -> Path:
+    """Directory holding all generated derivatives (square, thumb, screen)."""
+    return cache_dir() / _DERIVATIVES_SUBDIR
 
 
 def index_path() -> Path:
@@ -68,7 +68,7 @@ def index_path() -> Path:
 
 
 def ensure_dirs() -> None:
-    thumbs_dir().mkdir(parents=True, exist_ok=True)
+    derivatives_dir().mkdir(parents=True, exist_ok=True)
 
 
 # --- index (flat, path -> record) ---------------------------------------
@@ -136,11 +136,48 @@ class Index:
 
 
 # --- scanning ------------------------------------------------------------
+# Magic-byte signatures for the formats we support. A correct extension is not
+# enough: macOS AppleDouble sidecar files (e.g. ._myphoto.jpg) carry an image
+# extension but hold no image data, so we sniff the header before accepting.
+_APPLEDOUBLE_MAGIC = b"\x00\x05\x16\x07"  # AppleDouble / AppleSingle header
+
+
+def looks_like_image(path: str) -> bool:
+    """True if *path*'s first bytes match a supported image signature.
+
+    Read-only: opens the file, reads a small header, closes it. Explicitly
+    rejects AppleDouble sidecar files even though their extension may match.
+    """
+    try:
+        with open(path, "rb") as fh:
+            head = fh.read(16)
+    except OSError:
+        return False
+    if len(head) < 4:
+        return False
+    if head[:4] == _APPLEDOUBLE_MAGIC:
+        return False  # AppleDouble encoded Macintosh file
+    # JPEG: FF D8 FF
+    if head[:3] == b"\xff\xd8\xff":
+        return True
+    # PNG: 89 50 4E 47 0D 0A 1A 0A
+    if head[:8] == b"\x89PNG\r\n\x1a\n":
+        return True
+    # HEIC/HEIF: ISO-BMFF with 'ftyp' at bytes 4-8 and a HEIF brand.
+    if head[4:8] == b"ftyp":
+        brand = head[8:12]
+        if brand in (b"heic", b"heix", b"heif", b"mif1", b"msf1", b"hevc", b"hevx"):
+            return True
+    return False
+
+
 def scan_images(roots: list[str]) -> list[str]:
     """Return absolute paths of supported images under *roots* (recursive).
 
-    Read-only: only directory listing and stat are performed. Symlink loops are
-    avoided by not following directory symlinks.
+    Read-only: directory listing, stat, and a small header read for content
+    sniffing. Files whose contents are not a real supported image (e.g. macOS
+    AppleDouble ``._name.jpg`` sidecars) are skipped. Symlink loops are avoided
+    by not following directory symlinks.
     """
     found: list[str] = []
     seen_dirs: set[str] = set()
@@ -155,8 +192,11 @@ def scan_images(roots: list[str]) -> list[str]:
                 continue
             seen_dirs.add(real)
             for fn in filenames:
-                if is_supported_image(fn):
-                    found.append(os.path.join(dirpath, fn))
+                if not is_supported_image(fn):
+                    continue
+                full = os.path.join(dirpath, fn)
+                if looks_like_image(full):
+                    found.append(full)
     return found
 
 
@@ -197,6 +237,19 @@ def sync_index(index: Index, roots: list[str]) -> tuple[list[ImageRecord], list[
 
 
 # --- thumbnail generation -----------------------------------------------
+def has_all_derivatives(rec: ImageRecord) -> bool:
+    """True if every derivative for *rec* already exists on disk.
+
+    Used so a normal launch regenerates derivatives only for images that are
+    missing them, never for the whole library.
+    """
+    for attr in ("thumb_path", "screen_path", "square_path"):
+        p = getattr(rec, attr, None)
+        if not p or not os.path.exists(p):
+            return False
+    return True
+
+
 def _delete_derivatives(rec: ImageRecord) -> None:
     for attr in ("thumb_path", "screen_path", "square_path"):
         p = getattr(rec, attr, None)
@@ -221,7 +274,7 @@ def generate_derivatives(rec: ImageRecord, want_square: bool = True) -> bool:
     if not _HAVE_PIL:
         return False
     ensure_dirs()
-    td = thumbs_dir()
+    td = derivatives_dir()
     try:
         with Image.open(rec.path) as im:
             im = im.convert("RGB")
@@ -271,7 +324,7 @@ def cache_status(index: Index) -> dict[str, Any]:
 
     bytes_used = 0
     file_count = 0
-    td = thumbs_dir()
+    td = derivatives_dir()
     if td.exists():
         for entry in td.iterdir():
             try:
@@ -294,7 +347,7 @@ def cache_status(index: Index) -> dict[str, Any]:
 
 def clear_cache() -> None:
     """Delete all generated derivatives and the index (force regenerate)."""
-    td = thumbs_dir()
+    td = derivatives_dir()
     if td.exists():
         for entry in td.iterdir():
             try:
