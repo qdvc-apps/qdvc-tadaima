@@ -317,6 +317,14 @@ If the app uses noticeable CPU or disk while idle (no scan running):
   (rendering/layout), not our Python — pursue it with the frame monitor and the
   inspector instead.
 
+- **Isolate the gallery repainter.** A frame log of `N paints/sec (visible
+  page: gallery)` with no interaction means a gallery widget is repainting.
+  Binary-search it with these env switches (all opt-in): `QDVC_NO_SHADOW=1`
+  drops the thumbnail drop-shadow CSS (tests shadow rasterisation);
+  `QDVC_PLAIN_THUMBS=1` renders thumbnails as `Gtk.Image` instead of
+  `Gtk.Picture` (tests the Picture/paintable path). If the repaints stop under
+  one of these, that feature is the cause.
+
 - **Isolate the filmstrip.** Run `python3 qdvc_tadaima.py --no-filmstrip`
   (sets `QDVC_NO_FILMSTRIP=1`). The photo viewer then omits the filmstrip
   entirely — prev/next navigation stays on a thin bar — so you can A/B whether

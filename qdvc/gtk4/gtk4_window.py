@@ -94,6 +94,11 @@ class MainWindow(Adw.ApplicationWindow):
         # Diagnostic: --no-filmstrip (QDVC_NO_FILMSTRIP=1) hides the viewer
         # filmstrip entirely, to isolate whether it is responsible for CPU use.
         self._filmstrip_enabled = not os.environ.get("QDVC_NO_FILMSTRIP")
+        # Further CPU-isolation switches (all opt-in via env):
+        #   QDVC_NO_SHADOW=1     drop the thumbnail drop-shadow CSS
+        #   QDVC_PLAIN_THUMBS=1  render thumbnails with Gtk.Image, not Gtk.Picture
+        self._thumb_shadow = not os.environ.get("QDVC_NO_SHADOW")
+        self._plain_thumbs = bool(os.environ.get("QDVC_PLAIN_THUMBS"))
 
         win = self.config.get("window", {"width": 1100, "height": 720})
         self.set_default_size(int(win.get("width", 1100)), int(win.get("height", 720)))
@@ -722,6 +727,11 @@ class MainWindow(Adw.ApplicationWindow):
         # rows butt right up against each other; relaxed keeps rounded corners.
         compact = self.config.density == "compact"
         sel_radius = 0 if compact else 6
+        shadow_css = (
+            "box-shadow: 0 2px 8px rgba(0,0,0,0.5);"
+            if getattr(self, "_thumb_shadow", True)
+            else "box-shadow: none;"
+        )
         css = f"""
         /* Rows fill the full row area with no inter-row gaps, so every pixel of
            the sidebar is clickable and lands on an item. */
@@ -743,9 +753,11 @@ class MainWindow(Adw.ApplicationWindow):
         }}
         /* Shadow + selection border live on the picture itself, which is now
            sized to hug the real image (see _make_thumb), so they sit on the
-           photo's true edges rather than a letterboxed cell. */
+           photo's true edges rather than a letterboxed cell. The drop shadow
+           can be disabled with QDVC_NO_SHADOW=1 to test whether shadow
+           rasterisation is driving continuous repaints. */
         picture.tadaima-thumb {{
-            box-shadow: 0 2px 8px rgba(0,0,0,0.5);
+            {shadow_css}
             border-radius: 3px;
             background: transparent;
         }}
@@ -1139,20 +1151,34 @@ class MainWindow(Adw.ApplicationWindow):
             except Exception:
                 paintable = None
 
-        pic = Gtk.Picture()
-        pic.set_can_shrink(False)
-        pic.set_content_fit(Gtk.ContentFit.FILL)
-        pic.set_hexpand(False)
-        pic.set_vexpand(False)
-        # Centre the thumbnail within the square slot, both axes.
-        pic.set_halign(Gtk.Align.CENTER)
-        pic.set_valign(Gtk.Align.CENTER)
-        pic.add_css_class("tadaima-thumb")
-        if paintable is not None:
-            pic.set_paintable(paintable)
-        pic.set_size_request(disp_w, disp_h)
-        pic.set_tooltip_text(rec.name)
-        pic.set_cursor(Gdk.Cursor.new_from_name("pointer"))
+        if self._plain_thumbs:
+            # Isolation mode: a plain Gtk.Image from the pixbuf. Gtk.Image has a
+            # fixed size and no paintable/scaling machinery, so if the repaint
+            # loop vanishes in this mode, Gtk.Picture is implicated.
+            pic = Gtk.Image()
+            pic.set_pixel_size(max(disp_w, disp_h))
+            if src and os.path.exists(src):
+                pic.set_from_file(src)
+            pic.set_halign(Gtk.Align.CENTER)
+            pic.set_valign(Gtk.Align.CENTER)
+            pic.add_css_class("tadaima-thumb")
+            pic.set_tooltip_text(rec.name)
+            pic.set_cursor(Gdk.Cursor.new_from_name("pointer"))
+        else:
+            pic = Gtk.Picture()
+            pic.set_can_shrink(False)
+            pic.set_content_fit(Gtk.ContentFit.FILL)
+            pic.set_hexpand(False)
+            pic.set_vexpand(False)
+            # Centre the thumbnail within the square slot, both axes.
+            pic.set_halign(Gtk.Align.CENTER)
+            pic.set_valign(Gtk.Align.CENTER)
+            pic.add_css_class("tadaima-thumb")
+            if paintable is not None:
+                pic.set_paintable(paintable)
+            pic.set_size_request(disp_w, disp_h)
+            pic.set_tooltip_text(rec.name)
+            pic.set_cursor(Gdk.Cursor.new_from_name("pointer"))
 
         # Fixed slot_w × slot_w square: uniform across all slots (so columns and
         # rows are regular) and large enough to centre the thumbnail in both
