@@ -127,31 +127,43 @@ class MainWindow(Adw.ApplicationWindow):
         self._maybe_start_loop_probe()
 
     def _maybe_start_loop_probe(self) -> None:
-        """QDVC_LOOP_DEBUG=1: measure how many times the GLib main loop
-        dispatches a low-priority idle per second. A healthy idle app dispatches
-        a handful per second (it blocks in poll() between events). Millions per
-        second means a GSource is keeping the loop from ever blocking — i.e. the
-        main loop is spinning (100% CPU in `run` with no frames and no Python),
-        which is the classic cause of high CPU that is neither rendering nor a
-        busy thread.
+        """QDVC_LOOP_DEBUG=1: report how much CPU time the process burns per
+        wall-clock second, using a plain 1s timeout that does NOT itself keep
+        the loop busy. ~0% at idle is healthy; ~100% of one core means a busy
+        loop somewhere. Also flags a stuck stack/revealer transition.
         """
         if not os.environ.get("QDVC_LOOP_DEBUG"):
             return
-        self._loop_ticks = 0
-        self._loop_t0 = time.monotonic()
+        self._cpu_t0 = time.monotonic()
+        self._cpu_c0 = time.process_time()
+        # Also count real paints, so a single run distinguishes a render loop
+        # (high CPU + many paints/sec) from a non-render busy loop (high CPU +
+        # zero paints/sec).
+        self._loop_paints = 0
 
-        def idle_counter():
-            if self._closing:
-                return False
-            self._loop_ticks += 1
-            return True  # re-arm: intentionally, to sample the loop's cadence
+        def _count_paint(_clock):
+            self._loop_paints += 1
+
+        def _hook_clock(*_a):
+            clk = self.get_frame_clock()
+            if clk is not None:
+                clk.connect("after-paint", _count_paint)
+
+        if self.get_realized():
+            _hook_clock()
+        else:
+            self.connect("realize", _hook_clock)
 
         def reporter():
             if self._closing:
                 return False
             now = time.monotonic()
-            dt = now - self._loop_t0
-            rate = self._loop_ticks / dt if dt > 0 else 0
+            cpu = time.process_time()
+            dt = now - self._cpu_t0
+            dc = cpu - self._cpu_c0
+            frac = (dc / dt) if dt > 0 else 0.0
+            paints = self._loop_paints
+            self._loop_paints = 0
             # Also report whether an animation transition is stuck "running",
             # which is the usual thing that keeps a frame tick alive and spins
             # the loop.
@@ -172,18 +184,15 @@ class MainWindow(Adw.ApplicationWindow):
                 pass
             suffix = ("  [" + ", ".join(extras) + "]") if extras else ""
             print(
-                f"[tadaima][loop] idle dispatched {rate:,.0f}/sec "
-                f"(healthy: tens–hundreds; millions ⇒ the main loop is "
-                f"spinning on an always-ready GSource){suffix}",
+                f"[tadaima][loop] CPU {frac*100:.0f}% of one core, "
+                f"{paints} paints/sec "
+                f"({dc:.2f}s CPU / {dt:.2f}s wall){suffix}",
                 flush=True,
             )
-            self._loop_ticks = 0
-            self._loop_t0 = now
+            self._cpu_t0 = now
+            self._cpu_c0 = cpu
             return True
 
-        # The idle uses PRIORITY_DEFAULT_IDLE so it only fires when the loop
-        # would otherwise be idle; the reporter is a normal 1s timeout.
-        GLib.idle_add(idle_counter, priority=GLib.PRIORITY_DEFAULT_IDLE)
         GLib.timeout_add_seconds(1, reporter)
 
     def _install_frame_monitor(self, *_a) -> None:

@@ -345,14 +345,20 @@ If the app uses noticeable CPU or disk while idle (no scan running):
   the app sits fully idle after launch. Leave it untouched: if CPU is still
   high, the cost is *not* our background I/O or scan thread.
 
-- **Is the GLib main loop spinning?** Run `QDVC_LOOP_DEBUG=1 python3
-  qdvc_tadaima.py`. It logs `[tadaima][loop] idle dispatched N/sec`. A healthy
-  idle app blocks in `poll()` between events, so a low-priority idle fires only
-  tens–hundreds of times/sec. **Millions/sec means the main loop is spinning**
-  on an always-ready GSource — which shows up in `py-spy` as 100% in
-  `Gio.Application.run` with no frames and no app Python (exactly the observed
-  profile). That points at a GSource/file-descriptor watch that never blocks
-  rather than at rendering.
+- **How much CPU, and is it rendering?** Run `QDVC_LOOP_DEBUG=1 python3
+  qdvc_tadaima.py`. Once a second it prints `[tadaima][loop] CPU N% of one
+  core, P paints/sec`. This uses a plain 1s timeout and `time.process_time()`,
+  so (unlike an earlier idle-based probe) it does **not** itself spin the loop.
+  Read it as: `CPU ~0%` idle = healthy; `CPU ~100% of one core` = a busy loop.
+  If that busy loop also shows many `paints/sec`, it is a render loop; if
+  `0 paints/sec`, it is a non-render busy loop (a spinning GSource or a tight
+  callback). It also tags a stuck `stack`/`revealer` transition when present.
+
+- **Name the C function.** The plain `py-spy dump`/`top` we used only unwinds
+  Python and collapses everything into `Gio.Application.run`. To see the actual
+  C culprit, use the native unwinder while the CPU is high:
+  `sudo py-spy dump --native --pid <pid>` (or `py-spy top --native`). That names
+  the GTK/GLib/GDK/driver function actually burning the core.
 
 - **Isolate the gallery repainter.** A frame log of `N paints/sec (visible
   page: gallery)` with no interaction means a gallery widget is repainting.
