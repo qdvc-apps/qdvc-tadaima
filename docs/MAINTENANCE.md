@@ -317,6 +317,20 @@ If the app uses noticeable CPU or disk while idle (no scan running):
   (rendering/layout), not our Python — pursue it with the frame monitor and the
   inspector instead.
 
+- **Is it background I/O / the scan?** Run `QDVC_NO_BACKGROUND=1 python3
+  qdvc_tadaima.py`. This skips all background scanning and derivative work, so
+  the app sits fully idle after launch. Leave it untouched: if CPU is still
+  high, the cost is *not* our background I/O or scan thread.
+
+- **Is the GLib main loop spinning?** Run `QDVC_LOOP_DEBUG=1 python3
+  qdvc_tadaima.py`. It logs `[tadaima][loop] idle dispatched N/sec`. A healthy
+  idle app blocks in `poll()` between events, so a low-priority idle fires only
+  tens–hundreds of times/sec. **Millions/sec means the main loop is spinning**
+  on an always-ready GSource — which shows up in `py-spy` as 100% in
+  `Gio.Application.run` with no frames and no app Python (exactly the observed
+  profile). That points at a GSource/file-descriptor watch that never blocks
+  rather than at rendering.
+
 - **Isolate the gallery repainter.** A frame log of `N paints/sec (visible
   page: gallery)` with no interaction means a gallery widget is repainting.
   Binary-search it with these env switches (all opt-in): `QDVC_NO_SHADOW=1`

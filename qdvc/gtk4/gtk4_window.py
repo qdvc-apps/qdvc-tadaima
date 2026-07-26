@@ -124,6 +124,48 @@ class MainWindow(Adw.ApplicationWindow):
             self.connect("realize", self._install_frame_monitor)
 
         self._maybe_start_stack_sampler()
+        self._maybe_start_loop_probe()
+
+    def _maybe_start_loop_probe(self) -> None:
+        """QDVC_LOOP_DEBUG=1: measure how many times the GLib main loop
+        dispatches a low-priority idle per second. A healthy idle app dispatches
+        a handful per second (it blocks in poll() between events). Millions per
+        second means a GSource is keeping the loop from ever blocking — i.e. the
+        main loop is spinning (100% CPU in `run` with no frames and no Python),
+        which is the classic cause of high CPU that is neither rendering nor a
+        busy thread.
+        """
+        if not os.environ.get("QDVC_LOOP_DEBUG"):
+            return
+        self._loop_ticks = 0
+        self._loop_t0 = time.monotonic()
+
+        def idle_counter():
+            if self._closing:
+                return False
+            self._loop_ticks += 1
+            return True  # re-arm: intentionally, to sample the loop's cadence
+
+        def reporter():
+            if self._closing:
+                return False
+            now = time.monotonic()
+            dt = now - self._loop_t0
+            rate = self._loop_ticks / dt if dt > 0 else 0
+            print(
+                f"[tadaima][loop] idle dispatched {rate:,.0f}/sec "
+                f"(healthy: tens–hundreds; millions ⇒ the main loop is "
+                f"spinning on an always-ready GSource)",
+                flush=True,
+            )
+            self._loop_ticks = 0
+            self._loop_t0 = now
+            return True
+
+        # The idle uses PRIORITY_DEFAULT_IDLE so it only fires when the loop
+        # would otherwise be idle; the reporter is a normal 1s timeout.
+        GLib.idle_add(idle_counter, priority=GLib.PRIORITY_DEFAULT_IDLE)
+        GLib.timeout_add_seconds(1, reporter)
 
     def _install_frame_monitor(self, *_a) -> None:
         clock = self.get_frame_clock()
@@ -1639,6 +1681,13 @@ class MainWindow(Adw.ApplicationWindow):
 
     # ============================================= background scanning
     def _start_background_scan(self, force: bool = False) -> bool:
+        if os.environ.get("QDVC_NO_BACKGROUND"):
+            # Diagnostic: skip all background scanning/derivative work so the
+            # app sits completely idle after launch. If CPU is still high with
+            # this set and the window left untouched, the cost is NOT our
+            # background I/O or scan thread.
+            print("[tadaima] background scan disabled (QDVC_NO_BACKGROUND)", flush=True)
+            return False
         if self._scanning:
             return False
         roots = self.config.scanned_folders
