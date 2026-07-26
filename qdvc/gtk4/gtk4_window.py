@@ -1350,7 +1350,16 @@ class MainWindow(Adw.ApplicationWindow):
         self.stack.set_visible_child_name("full")
         # Move focus onto the picture area so the Back button isn't auto-focused
         # and the ←/→ key controller on the full page receives keystrokes.
-        GLib.idle_add(self._pic_area.grab_focus)
+        # NB: Gtk.Widget.grab_focus returns True on success, and GLib.idle_add
+        # KEEPS re-running any callback that returns truthy — so passing
+        # grab_focus directly makes the idle source re-arm forever, pinning one
+        # CPU core at 100% (dispatched via GObject-introspection/libffi from the
+        # main loop, with zero repaints). Wrap it so the idle runs exactly once.
+        def _focus_pic_once():
+            self._pic_area.grab_focus()
+            return False
+
+        GLib.idle_add(_focus_pic_once)
         self._refresh_actions()
 
     # ================================================ full view + filmstrip

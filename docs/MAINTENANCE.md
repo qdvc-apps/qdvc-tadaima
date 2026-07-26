@@ -277,28 +277,31 @@ scan thread or a stray GSource is still around. The detail area must actually
 gallery's `detail_row` box are `hexpand=True`, the info revealer is
 `hexpand=False`.
 
-## Viewer/idle CPU (spinning main loop) — diagnosis & fix
+## Viewer CPU (spinning idle) — ROOT CAUSE & fix
 
-Later finding that supersedes the layout-loop theory below: the steady ~12–13%
-was present from launch (the viewer was a red herring). `py-spy` showed 100% in
-`Gio.Application.run`, 0% app Python, no frames; `QDVC_LOOP_DEBUG=1` showed the
-GLib main loop dispatching a low-priority idle **~430,000×/sec** (healthy is
-tens–hundreds) — the loop never blocks in `poll()`. That is a *spinning main
-loop*, not rendering, I/O, or the scan (it persisted under
-`QDVC_NO_BACKGROUND=1`).
+Confirmed cause of the ~100%-of-one-core spin that started on opening a photo:
+`_on_thumb_activated` scheduled `GLib.idle_add(self._pic_area.grab_focus)` to
+move keyboard focus onto the image. `Gtk.Widget.grab_focus` **returns `True`**
+on success, and `GLib.idle_add` *keeps re-running any callback that returns a
+truthy value*. So the idle source re-armed on every main-loop iteration and
+called `grab_focus` forever — a Python callback dispatched via
+GObject-introspection/libffi straight from `g_main_context_iteration`. That is
+exactly what the evidence showed: `QDVC_LOOP_DEBUG` reported `CPU 100% of one
+core, 0 paints/sec` (a busy loop that draws nothing), and `py-spy dump --native`
+showed the hot stack as `g_main_context_iteration → libffi → gi/_gi →
+gi_callable_info_*` with no GTK render/layout frames at all.
 
-Cause: an animation transition fired on **viewer-open** could get stuck
-"running", holding a frame tick open forever and spinning the loop at 100% of
-one core (which reads as ~12% of an 8-core machine). The trigger that matched
-the symptom exactly — low CPU until a photo is opened, then a permanent spike —
-was the page `Gtk.Stack`'s `CROSSFADE` transition firing on the heavy
-gallery→full content swap. Fixes: (1) the page stack now uses
-`StackTransitionType.NONE` (instant switches are fine for a viewer); (2) the
-info-panel `Gtk.Revealer`'s *initial* reveal is applied with the transition
-temporarily `NONE`, then the slide restored on the next idle, so a persisted
-"info open" state can't leave a transition stuck at startup. `QDVC_LOOP_DEBUG=1`
-now also reports when a stack/revealer transition is stuck RUNNING, and
-`QDVC_NO_ANIM=1` disables transitions as a cross-check.
+Fix: wrap the focus call so the idle returns `False` and runs exactly once
+(`_focus_pic_once`). **Rule for this codebase:** never pass a GTK method
+directly to `GLib.idle_add`/`timeout_add`; many (like `grab_focus`,
+`set_visible`) return truthy and will re-arm the source. Always use a wrapper
+that returns `False`, or `GLib.SOURCE_REMOVE`.
+
+Earlier theories in this file (stuck stack crossfade / revealer transition,
+`Gtk.Picture` texture/layout loops) did *not* cause this and are retained only
+as diagnostic history; the crossfade was still switched off because it feels
+snappier, and the `_pic_area` wrapper / fixed caption footprint remain as sound
+layout hygiene.
 
 ## Viewer CPU (layout-loop) — earlier theory (superseded)
 
