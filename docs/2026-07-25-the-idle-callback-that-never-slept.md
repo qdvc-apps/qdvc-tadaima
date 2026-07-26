@@ -14,74 +14,60 @@ the distilled takeaways.
 
 ## Key lessons learnt
 
-These are written to travel. Only the last one is GTK-specific; the rest apply
-to any long-running Python program — a data pipeline, a web service, a daemon, a
-scheduled job — and to debugging in general.
+These are written to travel: they apply to any long-running program — a data
+pipeline, a web service, a daemon, a scheduled job — and to debugging in general,
+not just the GTK app they came from.
 
 1. **"Busy" and "doing work" are not the same thing. Measure the difference.**
    A process at 100% CPU is not necessarily *making progress*; it may be
-   spinning. The single most clarifying question in this whole saga was "is it
-   actually *doing* anything while it burns that core?" We answered it by
-   measuring output (screen repaints) separately from consumption (CPU time).
-   The equivalent in your world: is that 100%-CPU worker actually processing
-   rows, or stuck retrying a request in a tight loop? Is the training job
-   computing gradients or thrashing on data loading? Measure a *unit of useful
-   work per second* alongside CPU, and a spin becomes obvious instantly.
+   spinning uselessly. The most clarifying question in any high-CPU
+   investigation is "is it actually *accomplishing* anything while it burns that
+   core?" So measure a unit of *useful output* — rows processed, requests
+   served, frames drawn — alongside raw CPU. When consumption is high but output
+   is zero, you have a spin, and you have just ruled out every explanation that
+   assumed real work was happening.
 
-2. **Diagnose before theorising — and prefer measurements that *eliminate*
-   whole categories.** We wasted most of this investigation generating
-   plausible causes ("maybe it's the shadows, the animation, the image widget")
-   and testing them one at a time. The measurements that actually moved us were
-   the ones that killed an entire class of explanation in one shot: "zero
-   repaints while pinned" retired *every* rendering theory at once. Look for the
-   cheap observation that halves the search space, not the one that confirms
-   your current hunch.
+2. **Prefer diagnostics that eliminate whole categories.** Not every
+   measurement is equally worth taking. The valuable ones cut the space of
+   possible causes in half (or to nothing) in a single shot, rather than
+   confirming one suspect at a time. Here, "it is consuming a core but drawing
+   nothing" killed *every* rendering explanation at once — worth far more than
+   testing each visual feature individually. When you design a test, ask "which
+   answer rules out the most?", not "which answer matches my current hunch?"
 
-3. **Reach for a profiler earlier, and make sure it can see the layer the bug
-   lives in.** Our ordinary (Python-only) profiler kept reporting the program
-   was "in the main loop" — true but useless, like being told a stalled car is
-   "on the road." The bug lived one layer down, in C. A *native* profiler that
-   unwinds C stacks (`py-spy --native` here; `perf`, `eBPF`, or
-   `gdb`/`py-spy dump` elsewhere) named the culprit in a single capture. Know
-   which layer your tool observes, and when the answer is suspiciously vague,
-   switch to a tool that sees deeper.
+3. **Make sure your tools can see the layer the bug lives in.** Investigative
+   tools each observe one stratum of a system — application code, a runtime, a
+   library, the OS, the network, the hardware — and are blind to the others. A
+   tool aimed at the wrong layer returns answers that are technically true and
+   completely useless ("it's in the main loop"; "the query returned"; "the
+   request was sent"). When a result is suspiciously vague, that vagueness is
+   often the tool telling you the action is happening one level down; switch to
+   an instrument that sees that level before you theorise further.
 
-4. **Your measuring tools are part of the system. Account for their footprint.**
-   One version of our diagnostic *itself* caused the exact problem it was meant
-   to detect (see [cursed knowledge](#cursed-knowledge) and
-   [the puzzle](#8-the-puzzle-why-did-it-sometimes-spike-immediately-before-the-viewer)).
-   You cannot always know a tool is intrusive before you build it — but you can
-   habitually ask "what would I expect this probe to read if there were *no*
-   bug?", and if the baseline is not what you predicted, suspect the probe
-   before you trust its verdict. This is the software version of a control
-   group: run the instrument against a known-healthy state first.
+4. **Your measuring tools are part of the system; account for their footprint.**
+   A probe that changes what it observes can manufacture the very reading you
+   fear — so treat every instrument as a suspect until you have checked it
+   against a known-healthy baseline.
 
-5. **A callback's return value can be a control signal, not just data.** In many
-   event/scheduler frameworks — GLib here, but also things like retry loops,
-   generators, `__iter__`, comparator functions, framework hooks — what you
-   return *steers the framework*, sometimes invisibly. Before you pass a
-   function you did not write (a library method, a bound method) as a callback,
-   check what it returns and what the framework *does* with that return value.
-   A function that returns a perfectly reasonable value for its own purposes can
-   mean something entirely different to the code calling it.
+5. **A value returned to a framework can be a control signal, not just data.**
+   In many systems — schedulers, event loops, iterators, comparators, retry and
+   plugin hooks, even HTTP status handlers — what your function *returns* steers
+   the caller's behaviour, sometimes invisibly. Before handing a function you
+   did not write (a library method, a bound method) to such a framework, check
+   what it returns *and* what the framework does with that return value: a value
+   that is perfectly sensible for the function's own purpose can mean something
+   entirely different to the code calling it.
 
-6. **(GTK-specific) Never pass a GTK/GObject method straight to
-   `GLib.idle_add`/`timeout_add`.** These schedulers re-run any callback that
-   returns a truthy value, and many GTK methods (`grab_focus`, `set_visible`, …)
-   return truthy for their own reasons. Wrap the call in a one-line function
-   that returns `False` (or `GLib.SOURCE_REMOVE`). This is the concrete
-   instance of lesson 5 that cost us the most.
-
-> One of these — lesson 6 — is worth a direct, honest answer to a question that
-> came up: *did I know this before starting?* In the abstract, yes: GLib's
-> "return `True` to repeat, `False` to stop" rule is well documented and I could
-> have recited it. But knowing a rule and *noticing you have just violated it*
-> are different skills. The buggy line reads so naturally ("on idle, grab
-> focus") that the return-value question never surfaced while writing it. That
-> gap — between textbook knowledge and situational recognition — is exactly why
-> lessons 2–4 (measure, profile, don't trust a noisy instrument) matter more
-> than accumulating trivia: they catch the mistakes your knowledge failed to
-> prevent.
+> A direct, honest answer to a question that came up — *did I know the specific
+> gotcha behind this bug before starting?* In the abstract, yes: the rule
+> involved (covered in [the full story](#the-full-story)) is well documented and
+> I could have recited it. But knowing a rule and *noticing you have just
+> violated it* are different skills. The offending line read so naturally that
+> the question never surfaced while writing it. That gap — between textbook
+> knowledge and situational recognition — is exactly why lessons 1–4 (measure
+> output, eliminate categories, aim your tools, distrust a noisy instrument)
+> matter more than accumulating trivia: they catch the mistakes your knowledge
+> failed to prevent.
 
 ---
 
@@ -92,76 +78,31 @@ A timeline of the debugging, each entry linking to the exact point in the
 bottom, it is a case study in how a wrong hypothesis (rendering) survived far
 too long, and how narrowing measurements eventually forced the truth out.
 
-1. [Initial report](../vibe-coding/2026-07-25-claude.md#33-user-request): the
-   app sits at ~13% CPU even after all thumbnails are generated. *Next:* added
-   passive diagnostics — a frame-rate monitor and a pointer to GTK's interactive
-   inspector.
+1. **Initial report** _([33. User request](../vibe-coding/2026-07-25-claude.md#33-user-request)):_ The app sits at ~13% CPU even after all thumbnails are generated. *Next:* added passive diagnostics — a frame-rate monitor and a pointer to GTK's interactive inspector.
 
-2. [First diagnostics come back empty](../vibe-coding/2026-07-25-claude.md#35-user-request):
-   neither the frame monitor nor `GTK_DEBUG=interactive` shows anything obvious,
-   but `btop` shows some I/O and 25 threads. *Next:* explained that the I/O
-   figures were cumulative (not a live rate) and 25 threads is normal for GTK4;
-   fixed a genuine but unrelated config-write-on-every-event inefficiency.
+2. **First diagnostics come back empty** _([35. User request](../vibe-coding/2026-07-25-claude.md#35-user-request)):_ Neither the frame monitor nor `GTK_DEBUG=interactive` shows anything obvious, but `btop` shows some I/O and 25 threads. *Next:* explained that the I/O figures were cumulative (not a live rate) and 25 threads is normal for GTK4; fixed a genuine but unrelated config-write-on-every-event inefficiency.
 
-3. [The decisive observation](../vibe-coding/2026-07-25-claude.md#37-user-request):
-   CPU is mild (1–5%) browsing the library, but jumps to 12–13% the moment a
-   photo is opened in the viewer — **and stays there** after returning. *Next:*
-   theorised the viewer's full-size image was being re-scaled every frame;
-   switched it to an immutable GPU texture and cleared it on the way out.
+3. **The decisive observation** _([37. User request](../vibe-coding/2026-07-25-claude.md#37-user-request)):_ CPU is mild (1–5%) browsing the library, but jumps to 12–13% the moment a photo is opened in the viewer — **and stays there** after returning. *Next:* theorised the viewer's full-size image was being re-scaled every frame; switched it to an immutable GPU texture and cleared it on the way out.
 
-4. [That fix does nothing](../vibe-coding/2026-07-25-claude.md#39-user-request):
-   the spike persists even with `GSK_RENDERER=cairo` (ruling out the GL driver).
-   The user proposes a `--no-filmstrip` switch to isolate the filmstrip.
-   *Next:* added the switch.
+4. **That fix does nothing** _([39. User request](../vibe-coding/2026-07-25-claude.md#39-user-request)):_ The spike persists even with `GSK_RENDERER=cairo` (ruling out the GL driver). The user proposes a `--no-filmstrip` switch to isolate the filmstrip. *Next:* added the switch.
 
-5. [Filmstrip exonerated](../vibe-coding/2026-07-25-claude.md#41-user-request):
-   `--no-filmstrip` changes nothing. *Next:* made the frame monitor report only
-   when actually painting, and added a main-thread stack sampler.
+5. **Filmstrip exonerated** _([41. User request](../vibe-coding/2026-07-25-claude.md#41-user-request)):_ `--no-filmstrip` changes nothing. *Next:* made the frame monitor report only when actually painting, and added a main-thread stack sampler.
 
-6. [Frame + stack output](../vibe-coding/2026-07-25-claude.md#43-user-request):
-   the crucial clue that the continuous repaints (when they happened at all)
-   were on the *gallery* page, not the viewer. *Next:* added switches to disable
-   thumbnail shadows and to render thumbnails as plain images.
+6. **Frame + stack output** _([43. User request](../vibe-coding/2026-07-25-claude.md#43-user-request)):_ The crucial clue that the continuous repaints (when they happened at all) were on the *gallery* page, not the viewer. *Next:* added switches to disable thumbnail shadows and to render thumbnails as plain images.
 
-7. [A Python-only py-spy capture](../vibe-coding/2026-07-25-claude.md#45-user-request):
-   100% of time in `Gio.Application.run` with 0% in app Python. Interpreted
-   (correctly) as "the cost is in C, not our code" — but the plain profiler
-   could not say *which* C. *Next:* kept chasing rendering hypotheses.
+7. **A Python-only py-spy capture** _([45. User request](../vibe-coding/2026-07-25-claude.md#45-user-request)):_ 100% of time in `Gio.Application.run` with 0% in app Python. Interpreted (correctly) as "the cost is in C, not our code" — but the plain profiler could not say *which* C. *Next:* kept chasing rendering hypotheses.
 
-8. [The pushback that turned the case](../vibe-coding/2026-07-25-claude.md#47-user-request):
-   shadows and plain-thumbnails switches change nothing; the user notes frame
-   logs are silent when idle yet CPU stays high, and asks the key question — is
-   this even UI-related? Could we have a switch to disable *all* background
-   I/O? *Next:* conceded rendering was likely a dead end; added
-   `QDVC_NO_BACKGROUND` and a main-loop probe.
+8. **The pushback that turned the case** _([47. User request](../vibe-coding/2026-07-25-claude.md#47-user-request)):_ Shadows and plain-thumbnails switches change nothing; the user notes frame logs are silent when idle yet CPU stays high, and asks the key question — is this even UI-related? Could we have a switch to disable *all* background I/O? *Next:* conceded rendering was likely a dead end; added `QDVC_NO_BACKGROUND` and a main-loop probe.
 
-9. [The probe screams](../vibe-coding/2026-07-25-claude.md#49-user-request):
-   with background work disabled, CPU still spikes, and the loop probe reports
-   the main loop dispatching an idle **~430,000×/sec**. *Next:* (mistakenly)
-   read this as a stuck animation transition and disabled the page crossfade.
-   **This probe was itself flawed — see cursed knowledge.**
+9. **The probe screams** _([49. User request](../vibe-coding/2026-07-25-claude.md#49-user-request)):_ With background work disabled, CPU still spikes, and the loop probe reports the main loop dispatching an idle **~430,000×/sec**. *Next:* (mistakenly) read this as a stuck animation transition and disabled the page crossfade. **This probe was itself flawed — see cursed knowledge.**
 
-10. [Crossfade removed, still spinning](../vibe-coding/2026-07-25-claude.md#51-user-request):
-    the user reports it now clearly (thank you) as **100% of a single core**,
-    and that with the probe enabled it spikes *immediately at launch*, not just
-    on viewer-open. *Next:* began suspecting the probe itself.
+10. **Crossfade removed, still spinning** _([51. User request](../vibe-coding/2026-07-25-claude.md#51-user-request)):_ The user reports it now clearly (thank you) as **100% of a single core**, and that with the probe enabled it spikes *immediately at launch*, not just on viewer-open. *Next:* began suspecting the probe itself.
 
-11. [Confirmed independent of animation](../vibe-coding/2026-07-25-claude.md#53-user-request):
-    no "transition RUNNING" tag ever appears; both animation theories die.
-    *Next:* rewrote the probe to be **passive** — a once-per-second timeout
-    reading CPU time and real paint count, incapable of spinning the loop
-    itself.
+11. **Confirmed independent of animation** _([53. User request](../vibe-coding/2026-07-25-claude.md#53-user-request)):_ No "transition RUNNING" tag ever appears; both animation theories die. *Next:* rewrote the probe to be **passive** — a once-per-second timeout reading CPU time and real paint count, incapable of spinning the loop itself.
 
-12. [The honest instrument speaks](../vibe-coding/2026-07-25-claude.md#55-user-request):
-    `CPU 100% of one core, 0 paints/sec` — a busy loop that draws nothing — plus
-    a **native** `py-spy dump --native` showing the hot stack as
-    `g_main_context_iteration → libffi → gi/_gi → gi_callable_info_*`: a Python
-    callback dispatched by the main loop, over and over.
+12. **The honest instrument speaks** _([55. User request](../vibe-coding/2026-07-25-claude.md#55-user-request)):_ `CPU 100% of one core, 0 paints/sec` — a busy loop that draws nothing — plus a **native** `py-spy dump --native` showing the hot stack as `g_main_context_iteration → libffi → gi/_gi → gi_callable_info_*`: a Python callback dispatched by the main loop, over and over.
 
-13. [Root cause](../vibe-coding/2026-07-25-claude.md#56-llm-response):
-    `GLib.idle_add(self._pic_area.grab_focus)` in the viewer-open path.
-    `grab_focus` returns `True`; `idle_add` re-runs any truthy callback; the
-    idle source re-armed forever. Fixed by wrapping it to return `False`.
+13. **Root cause** _([56. LLM response](../vibe-coding/2026-07-25-claude.md#56-llm-response)):_ `GLib.idle_add(self._pic_area.grab_focus)` in the viewer-open path. `grab_focus` returns `True`; `idle_add` re-runs any truthy callback; the idle source re-armed forever. Fixed by wrapping it to return `False`.
 
 ---
 
@@ -170,38 +111,17 @@ too long, and how narrowing measurements eventually forced the truth out.
 In the spirit of [immich's cursed knowledge](https://immich.app/cursed-knowledge):
 things we now know and rather wish we didn't.
 
-- **2026-07-25** — `GLib.idle_add(widget.grab_focus)` is an infinite loop.
-  `grab_focus()` returns `True` on success, and GLib re-runs any idle callback
-  that returns truthy, so it fires forever and pins a CPU core at 100%. The fix
-  is `return False`. The bug is invisible at the call site because the offending
-  return value belongs to a method you didn't write.
+- **The one-line infinite loop:** `GLib.idle_add(widget.grab_focus)` fires forever and pins a CPU core at 100%. `grab_focus()` returns `True` on success, and GLib re-runs any idle callback that returns truthy. The fix is `return False`. The bug is invisible at the call site because the offending return value belongs to a method you didn't write.
 
-- **2026-07-25** — A GTK app doing *nothing* can burn a full core, draw zero
-  pixels, and show 0% in every Python profiler simultaneously. All three are
-  consistent and all three are true: the work is real, it's just happening in C
-  inside the GLib main loop, invisible to Python-only tooling.
+- **Busy, blind, and idle all at once:** A GTK app doing *nothing* can burn a full core, draw zero pixels, and show 0% in every Python profiler simultaneously. All three readings are consistent and all three are true: the work is real, it's just happening in C inside the GLib main loop, invisible to Python-only tooling.
 
-- **2026-07-25** — Our own CPU probe caused the CPU problem. The first version
-  used a self-re-arming idle callback (`return True`) to "sample" the loop —
-  which is precisely the thing that spins the loop. For a while we were, in
-  effect, measuring our own thermometer's body heat. Passive probes (a periodic
-  timeout reading a counter) don't have this problem; some questions still need
-  active probes, so the real rule is *characterise your probe against a
-  known-good baseline*.
+- **The thermometer had a fever:** Our own CPU probe caused the CPU problem. The first version used a self-re-arming idle callback (`return True`) to "sample" the loop — which is precisely the thing that spins the loop. For a while we were, in effect, measuring our own thermometer's body heat. Passive probes (a periodic timeout reading a counter) don't have this problem; some questions still need active probes, so the real rule is *characterise your probe against a known-good baseline*.
 
-- **2026-07-25** — `btop`'s per-process IO/R and IO/W columns are cumulative
-  totals since the process started, not live rates. A few hundred KiB sitting
-  there is not "ongoing I/O"; it's the running total, holding still. We briefly
-  chased phantom disk activity because of this.
+- **btop's I/O columns lie about "now":** `btop`'s per-process IO/R and IO/W columns are cumulative totals since the process started, not live rates. A few hundred KiB sitting there is not "ongoing I/O"; it's the running total, holding still. We briefly chased phantom disk activity because of this.
 
-- **2026-07-25** — ~25 threads for an idle GTK4 app is normal, not a leak. The
-  GL/render pool, the GIO worker pool and GLib workers are mostly parked. Thread
-  *count* is not thread *activity*.
+- **Twenty-five threads is fine, actually:** ~25 threads for an idle GTK4 app is normal, not a leak. The GL/render pool, the GIO worker pool and GLib workers are mostly parked. Thread *count* is not thread *activity*.
 
-- **2026-07-25** — "100% CPU" from a system monitor may mean 100% of *one core*
-  on a many-core machine (here ~12.5% of eight). The wording matters: a single
-  pegged core is the fingerprint of a single-threaded busy loop, which is a very
-  different search than "the whole machine is loaded".
+- **"100% CPU" is a trick question:** "100% CPU" from a system monitor may mean 100% of *one core* on a many-core machine (here ~12.5% of eight). The wording matters: a single pegged core is the fingerprint of a single-threaded busy loop, which is a very different search than "the whole machine is loaded".
 
 ---
 
