@@ -193,13 +193,26 @@ Preferences applies it live.
 `DateTimeOriginal` (falling back to `DateTime`, then filesystem mtime, the
 fallback labelled "(file date)"), pixel dimensions, and human-readable file
 size. `_metadata_line` formats the one-line summary shown in both the gallery
-filename bar and the full-view caption. The **info button** (left of the primary
-menu in both the gallery and the viewer, action `win.photo-info`) toggles a
-right-hand **information sidebar** (`_build_info_panel` in a `Gtk.Revealer` that
-slides in): name, date taken, dimensions, file size, and path (no image preview).
-`_update_info_panel` refreshes it whenever the selection changes while it is
-open; invoking it from the viewer returns to the gallery first (the panel lives
-there). It is not a modal dialog.
+filename bar and the full-view caption. The `win.photo-info` action (Ctrl+I;
+info button left of the primary menu in both the gallery and the viewer) toggles
+a right-hand `Gtk.Revealer` (`_build_info_panel`) that **wraps both pages** (a
+sibling of the page `Gtk.Stack` in `_build_ui`), so it stays open or closed
+consistently across the gallery and the viewer and shows the selected photo's
+metadata in either. Its open/closed state persists via `config.info_open`. It
+shows metadata fields only — name, date taken, dimensions, file size, path
+(selectable) — and deliberately does **not** render the photo. `_update_info_panel`
+refreshes it on selection change and on viewer navigation while open.
+
+## Menus & shortcuts
+
+The primary menu (in both the gallery and viewer header bars) offers Scanned
+folders, **Scan for changes**, Cache status, Preferences, Keyboard Shortcuts,
+and About. "Regenerate all caches" is intentionally **not** in the menu — it
+lives only inside the Cache status dialog. `win.scan-changes` (Ctrl+R) runs
+`sync_index` (adds new/changed files; removes vanished ones and deletes their
+derivatives) then generates any missing derivatives, never rebuilding
+up-to-date ones. The shortcuts window is bound to Ctrl+? (several spellings, as
+? is Shift+/ on most layouts).
 
 ## Persistent sidebar state
 

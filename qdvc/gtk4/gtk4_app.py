@@ -39,6 +39,13 @@ class TadaimaApplication(Adw.Application):
             "win.zoom-in": ["<Primary>plus", "<Primary>equal", "<Primary>KP_Add"],
             "win.zoom-out": ["<Primary>minus", "<Primary>KP_Subtract"],
             "win.zoom-reset": ["<Primary>0", "<Primary>KP_0"],
+            # "?" is Shift+"/" on most layouts, so accept several spellings.
+            "win.shortcuts": [
+                "<Primary>question",
+                "<Primary><Shift>question",
+                "<Primary>slash",
+                "<Primary><Shift>slash",
+            ],
         }
         for sc in SHORTCUTS:
             if sc.action in _full_view_only:

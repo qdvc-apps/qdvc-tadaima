@@ -14,6 +14,7 @@ def install_actions(window) -> None:
     specs = [
         ("add-folder", window.on_add_folder),
         ("manage-folders", window.on_manage_folders),
+        ("scan-changes", window.on_scan_changes),
         ("regenerate-cache", window.on_regenerate_cache),
         ("cache-status", window.on_cache_status),
         ("preferences", window.on_preferences),

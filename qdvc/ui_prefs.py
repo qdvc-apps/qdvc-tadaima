@@ -19,8 +19,10 @@ class Shortcut:
 
 SHORTCUTS: tuple[Shortcut, ...] = (
     Shortcut("win.manage-folders", "<Primary>o", "Scanned folders", "Folders"),
-    Shortcut("win.regenerate-cache", "<Primary>r", "Regenerate all caches", "Cache"),
+    Shortcut("win.scan-changes", "<Primary>r", "Scan for changes", "Cache"),
+    Shortcut("win.photo-info", "<Primary>i", "Show photo information", "View"),
     Shortcut("win.preferences", "<Primary>comma", "Preferences", "General"),
+    Shortcut("win.shortcuts", "<Primary>question", "Keyboard shortcuts", "General"),
     Shortcut("win.back", "Escape", "Back to gallery (from full view)", "Navigation"),
     Shortcut("win.prev-photo", "Left", "Previous photo (in full view)", "Navigation"),
     Shortcut("win.next-photo", "Right", "Next photo (in full view)", "Navigation"),
@@ -42,8 +44,8 @@ SHORTCUTS: tuple[Shortcut, ...] = (
 # font_scale            : row label font scale (1.0 == theme default).
 DENSITY_SPECS: dict[str, dict[str, float]] = {
     "compact": {
-        "row_pad_v": 1,
-        "row_pad_h": 4,
+        "row_pad_v": 2,
+        "row_pad_h": 5,
         "indent": 10,
         "icon_px": 16,
         "font_scale": 0.9,

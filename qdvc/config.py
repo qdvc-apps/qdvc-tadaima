@@ -42,6 +42,7 @@ DEFAULTS: dict[str, Any] = {
     "expanded_folders": [],        # list of absolute folder paths expanded
     "selected_folder": None,       # absolute path of the selected folder
     "focus_folder": None,          # absolute path of the focused folder ("/" == none)
+    "info_open": False,            # information sidebar open/closed
 }
 
 _VALID_DENSITY = ("compact", "relaxed")
@@ -254,3 +255,11 @@ class Config:
     @focus_folder.setter
     def focus_folder(self, path: str | None) -> None:
         self.set("focus_folder", os.path.normpath(path) if path else None)
+
+    @property
+    def info_open(self) -> bool:
+        return bool(self.get("info_open", False))
+
+    @info_open.setter
+    def info_open(self, value: bool) -> None:
+        self.set("info_open", bool(value))

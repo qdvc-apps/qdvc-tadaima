@@ -110,10 +110,30 @@ class MainWindow(Adw.ApplicationWindow):
     def _build_ui(self) -> None:
         self.stack = Gtk.Stack()
         self.stack.set_transition_type(Gtk.StackTransitionType.CROSSFADE)
+        self.stack.set_hexpand(True)
         self.stack.add_named(self._build_gallery_page(), "gallery")
         self.stack.add_named(self._build_full_page(), "full")
         self.stack.set_visible_child_name("gallery")
-        self.set_content(self.stack)
+
+        # A single information sidebar wraps BOTH pages, so it stays open (or
+        # closed) consistently across the gallery and the photo viewer. It
+        # slides in on the right and shows the selected photo's metadata.
+        self.info_revealer = Gtk.Revealer()
+        self.info_revealer.set_transition_type(
+            Gtk.RevealerTransitionType.SLIDE_LEFT
+        )
+        self.info_revealer.set_hexpand(False)
+        self.info_revealer.set_child(self._build_info_panel())
+
+        row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL)
+        row.append(self.stack)
+        row.append(self.info_revealer)
+
+        # Restore the info panel's open/closed state from the previous session.
+        self._info_open = bool(self.config.info_open)
+        self.info_revealer.set_reveal_child(self._info_open)
+
+        self.set_content(row)
 
     def _primary_menu(self) -> Gio.Menu:
         menu = Gio.Menu()
@@ -125,8 +145,10 @@ class MainWindow(Adw.ApplicationWindow):
         menu.append_section(None, folders)
 
         cache = Gio.Menu()
+        cache.append("Scan for changes", "win.scan-changes")
         cache.append("Cache status…", "win.cache-status")
-        cache.append("Regenerate all caches", "win.regenerate-cache")
+        # "Regenerate all caches" is intentionally not here — it lives only in
+        # the Cache status dialog.
         menu.append_section(None, cache)
 
         end = Gio.Menu()
@@ -162,22 +184,7 @@ class MainWindow(Adw.ApplicationWindow):
         self.paned.set_resize_start_child(False)
         self.paned.set_shrink_start_child(False)
 
-        # Detail area + a right-hand info sidebar (a revealer that slides in).
-        detail_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL)
-        detail_widget = self._build_detail()
-        detail_widget.set_hexpand(True)
-        detail_row.append(detail_widget)
-
-        self.info_revealer = Gtk.Revealer()
-        self.info_revealer.set_transition_type(
-            Gtk.RevealerTransitionType.SLIDE_LEFT
-        )
-        self.info_revealer.set_reveal_child(False)
-        self.info_revealer.set_hexpand(False)
-        self.info_revealer.set_child(self._build_info_panel())
-        detail_row.append(self.info_revealer)
-
-        self.paned.set_end_child(detail_row)
+        self.paned.set_end_child(self._build_detail())
         self.paned.set_resize_end_child(True)
         toolbar_view.set_content(self.paned)
 
@@ -436,9 +443,12 @@ class MainWindow(Adw.ApplicationWindow):
             row.set_subtitle(val)
 
     def _set_info_visible(self, visible: bool) -> None:
+        self._info_open = visible
         self.info_revealer.set_reveal_child(visible)
         if visible:
             self._update_info_panel()
+        if not getattr(self, "_restoring_state", False):
+            self.config.info_open = visible
 
     # ------------------------------------------------------------- detail
     def _build_detail(self) -> Gtk.Widget:
@@ -594,13 +604,25 @@ class MainWindow(Adw.ApplicationWindow):
     def _apply_density(self) -> None:
         spec = density_spec(self.config.density)
         self._sidebar_icon_px = int(spec["icon_px"])
+        # In compact mode the selection highlight has no rounded corners and the
+        # rows butt right up against each other; relaxed keeps rounded corners.
+        compact = self.config.density == "compact"
+        sel_radius = 0 if compact else 6
         css = f"""
+        /* Rows fill the full row area with no inter-row gaps, so every pixel of
+           the sidebar is clickable and lands on an item. */
+        .tadaima-sidebar > row,
         .tadaima-sidebar row {{
             padding-top: {int(spec['row_pad_v'])}px;
             padding-bottom: {int(spec['row_pad_v'])}px;
             padding-left: {int(spec['row_pad_h'])}px;
             padding-right: {int(spec['row_pad_h'])}px;
+            margin: 0;
             min-height: 0;
+            border-radius: {sel_radius}px;
+        }}
+        .tadaima-sidebar {{
+            padding: 0;
         }}
         .tadaima-sidebar .tadaima-row-label {{
             font-size: {spec['font_scale']:.2f}em;
@@ -961,6 +983,15 @@ class MainWindow(Adw.ApplicationWindow):
         self.detail_stack.set_visible_child_name("grid")
         for rec in images:
             self.flow.append(self._make_thumb(rec))
+        # Reset the scroll position to the top; otherwise the previous folder's
+        # scroll offset persists and looks like a big empty gap at the top.
+        def _reset_scroll():
+            vadj = self.detail_scroller.get_vadjustment()
+            if vadj is not None:
+                vadj.set_value(vadj.get_lower())
+            return False
+
+        GLib.idle_add(_reset_scroll)
 
     def _make_thumb(self, rec) -> Gtk.Widget:
         fbchild = Gtk.FlowBoxChild()
@@ -1150,6 +1181,9 @@ class MainWindow(Adw.ApplicationWindow):
 
         self.prev_btn.set_sensitive(idx > 0)
         self.next_btn.set_sensitive(idx < len(self._full_images) - 1)
+        self._refresh_actions()
+        if getattr(self, "_info_open", False):
+            self._update_info_panel()
 
     def on_prev_photo(self) -> None:
         self._show_full_at(self._full_index - 1)
@@ -1385,6 +1419,16 @@ class MainWindow(Adw.ApplicationWindow):
         )
         dlg.present()
 
+    def on_scan_changes(self) -> None:
+        """Look for new/changed files (index + generate missing derivatives)
+        and for vanished files (remove from index, delete their derivatives).
+        sync_index handles removals; the background scan generates any missing
+        derivatives. Does not touch existing, up-to-date derivatives."""
+        if self._scanning:
+            return
+        self._set_status("Scanning for changes…", transient=True)
+        self._start_background_scan(force=False)
+
     def on_regenerate_cache(self) -> None:
         if self._scanning:
             return
@@ -1394,12 +1438,9 @@ class MainWindow(Adw.ApplicationWindow):
         self._start_background_scan(force=True)
 
     def on_photo_info(self) -> None:
-        # The info sidebar lives in the gallery page; if invoked from the
-        # viewer, return to the gallery first so the panel is visible.
-        if self.stack.get_visible_child_name() == "full":
-            self.on_back()
-        visible = not self.info_revealer.get_reveal_child()
-        self._set_info_visible(visible)
+        # The info sidebar wraps both pages, so it works in the gallery and the
+        # viewer without switching modes.
+        self._set_info_visible(not self._info_open)
 
     def on_preferences(self) -> None:
         from .gtk4_preferences import PreferencesWindow
@@ -1546,6 +1587,7 @@ class MainWindow(Adw.ApplicationWindow):
     def _refresh_actions(self) -> None:
         has_folders = bool(self.config.scanned_folders)
         set_enabled(self, "regenerate-cache", has_folders and not self._scanning)
+        set_enabled(self, "scan-changes", has_folders and not self._scanning)
         in_full = self.stack.get_visible_child_name() == "full"
         set_enabled(self, "back", in_full)
         set_enabled(self, "prev-photo", in_full and self._full_index > 0)
