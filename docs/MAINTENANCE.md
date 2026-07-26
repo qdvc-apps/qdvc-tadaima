@@ -277,7 +277,27 @@ scan thread or a stray GSource is still around. The detail area must actually
 gallery's `detail_row` box are `hexpand=True`, the info revealer is
 `hexpand=False`.
 
-## Viewer CPU (layout-loop) — diagnosis & fix
+## Viewer/idle CPU (spinning main loop) — diagnosis & fix
+
+Later finding that supersedes the layout-loop theory below: the steady ~12–13%
+was present from launch (the viewer was a red herring). `py-spy` showed 100% in
+`Gio.Application.run`, 0% app Python, no frames; `QDVC_LOOP_DEBUG=1` showed the
+GLib main loop dispatching a low-priority idle **~430,000×/sec** (healthy is
+tens–hundreds) — the loop never blocks in `poll()`. That is a *spinning main
+loop*, not rendering, I/O, or the scan (it persisted under
+`QDVC_NO_BACKGROUND=1`).
+
+Cause: the info-panel `Gtk.Revealer` was told to `set_reveal_child(True)`
+(restoring the persisted `info_open` state) *during construction, before the
+widget was mapped*, with its slide transition active. A revealer asked to
+animate before mapping can leave the transition permanently "in progress",
+keeping a frame tick alive forever. Fix: apply the initial reveal with the
+transition temporarily `NONE`, then restore the slide on the next idle.
+`QDVC_NO_ANIM=1` disables the stack/revealer transitions as a cross-check. The
+`_pic_area` wrapper / fixed caption footprint from the earlier theory are kept
+as correct layout hygiene regardless.
+
+## Viewer CPU (layout-loop) — earlier theory (superseded)
 
 Symptom: opening the photo viewer pushed CPU to ~13% and it stayed there.
 `py-spy top` showed the main thread 100% inside `Gio.Application.run` with 0%

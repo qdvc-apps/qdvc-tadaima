@@ -233,19 +233,26 @@ class MainWindow(Adw.ApplicationWindow):
 
     # ================================================================= UI
     def _build_ui(self) -> None:
+        # Diagnostic: QDVC_NO_ANIM=1 disables the stack/revealer transitions, to
+        # test whether an animation/transition is spinning the main loop.
+        no_anim = bool(os.environ.get("QDVC_NO_ANIM"))
+
         self.stack = Gtk.Stack()
-        self.stack.set_transition_type(Gtk.StackTransitionType.CROSSFADE)
+        self.stack.set_transition_type(
+            Gtk.StackTransitionType.NONE if no_anim
+            else Gtk.StackTransitionType.CROSSFADE
+        )
         self.stack.set_hexpand(True)
         self.stack.add_named(self._build_gallery_page(), "gallery")
         self.stack.add_named(self._build_full_page(), "full")
         self.stack.set_visible_child_name("gallery")
 
         # A single information sidebar wraps BOTH pages, so it stays open (or
-        # closed) consistently across the gallery and the photo viewer. It
-        # slides in on the right and shows the selected photo's metadata.
+        # closed) consistently across the gallery and the photo viewer.
         self.info_revealer = Gtk.Revealer()
         self.info_revealer.set_transition_type(
-            Gtk.RevealerTransitionType.SLIDE_LEFT
+            Gtk.RevealerTransitionType.NONE if no_anim
+            else Gtk.RevealerTransitionType.SLIDE_LEFT
         )
         self.info_revealer.set_hexpand(False)
         self.info_revealer.set_child(self._build_info_panel())
@@ -255,8 +262,23 @@ class MainWindow(Adw.ApplicationWindow):
         row.append(self.info_revealer)
 
         # Restore the info panel's open/closed state from the previous session.
+        # CRITICAL: apply the *initial* reveal with the transition temporarily
+        # disabled. Telling a Gtk.Revealer to animate a reveal before it is
+        # mapped can leave the transition permanently "in progress", which keeps
+        # a frame tick alive forever — a spinning main loop (100% CPU in the
+        # GLib loop, no frames, no Python). Setting it instantly avoids that; the
+        # slide animation is restored immediately afterwards for later toggles.
         self._info_open = bool(self.config.info_open)
+        saved_transition = self.info_revealer.get_transition_type()
+        self.info_revealer.set_transition_type(Gtk.RevealerTransitionType.NONE)
         self.info_revealer.set_reveal_child(self._info_open)
+        if not no_anim:
+            # Restore the animated transition once idle (after the initial map).
+            def _restore_transition():
+                self.info_revealer.set_transition_type(saved_transition)
+                return False
+
+            GLib.idle_add(_restore_transition)
 
         self.set_content(row)
 
