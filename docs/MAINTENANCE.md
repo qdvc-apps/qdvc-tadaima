@@ -279,6 +279,9 @@ gallery's `detail_row` box are `hexpand=True`, the info revealer is
 
 ## Viewer CPU (spinning idle) — ROOT CAUSE & fix
 
+> A longer, beginner-friendly writeup of this bug and the debugging story lives
+> in `docs/2026-07-25-the-idle-callback-that-never-slept.md`.
+
 Confirmed cause of the ~100%-of-one-core spin that started on opening a photo:
 `_on_thumb_activated` scheduled `GLib.idle_add(self._pic_area.grab_focus)` to
 move keyboard focus onto the image. `Gtk.Widget.grab_focus` **returns `True`**
