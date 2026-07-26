@@ -287,15 +287,18 @@ tens–hundreds) — the loop never blocks in `poll()`. That is a *spinning main
 loop*, not rendering, I/O, or the scan (it persisted under
 `QDVC_NO_BACKGROUND=1`).
 
-Cause: the info-panel `Gtk.Revealer` was told to `set_reveal_child(True)`
-(restoring the persisted `info_open` state) *during construction, before the
-widget was mapped*, with its slide transition active. A revealer asked to
-animate before mapping can leave the transition permanently "in progress",
-keeping a frame tick alive forever. Fix: apply the initial reveal with the
-transition temporarily `NONE`, then restore the slide on the next idle.
-`QDVC_NO_ANIM=1` disables the stack/revealer transitions as a cross-check. The
-`_pic_area` wrapper / fixed caption footprint from the earlier theory are kept
-as correct layout hygiene regardless.
+Cause: an animation transition fired on **viewer-open** could get stuck
+"running", holding a frame tick open forever and spinning the loop at 100% of
+one core (which reads as ~12% of an 8-core machine). The trigger that matched
+the symptom exactly — low CPU until a photo is opened, then a permanent spike —
+was the page `Gtk.Stack`'s `CROSSFADE` transition firing on the heavy
+gallery→full content swap. Fixes: (1) the page stack now uses
+`StackTransitionType.NONE` (instant switches are fine for a viewer); (2) the
+info-panel `Gtk.Revealer`'s *initial* reveal is applied with the transition
+temporarily `NONE`, then the slide restored on the next idle, so a persisted
+"info open" state can't leave a transition stuck at startup. `QDVC_LOOP_DEBUG=1`
+now also reports when a stack/revealer transition is stuck RUNNING, and
+`QDVC_NO_ANIM=1` disables transitions as a cross-check.
 
 ## Viewer CPU (layout-loop) — earlier theory (superseded)
 

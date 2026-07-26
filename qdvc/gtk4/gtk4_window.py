@@ -152,10 +152,29 @@ class MainWindow(Adw.ApplicationWindow):
             now = time.monotonic()
             dt = now - self._loop_t0
             rate = self._loop_ticks / dt if dt > 0 else 0
+            # Also report whether an animation transition is stuck "running",
+            # which is the usual thing that keeps a frame tick alive and spins
+            # the loop.
+            extras = []
+            try:
+                if hasattr(self, "stack") and self.stack.get_transition_running():
+                    extras.append("stack transition RUNNING")
+            except Exception:
+                pass
+            try:
+                if (
+                    hasattr(self, "info_revealer")
+                    and self.info_revealer.get_child_revealed()
+                    != self.info_revealer.get_reveal_child()
+                ):
+                    extras.append("revealer transition RUNNING")
+            except Exception:
+                pass
+            suffix = ("  [" + ", ".join(extras) + "]") if extras else ""
             print(
                 f"[tadaima][loop] idle dispatched {rate:,.0f}/sec "
                 f"(healthy: tens–hundreds; millions ⇒ the main loop is "
-                f"spinning on an always-ready GSource)",
+                f"spinning on an always-ready GSource){suffix}",
                 flush=True,
             )
             self._loop_ticks = 0
@@ -238,10 +257,12 @@ class MainWindow(Adw.ApplicationWindow):
         no_anim = bool(os.environ.get("QDVC_NO_ANIM"))
 
         self.stack = Gtk.Stack()
-        self.stack.set_transition_type(
-            Gtk.StackTransitionType.NONE if no_anim
-            else Gtk.StackTransitionType.CROSSFADE
-        )
+        # Use NO stack transition. A CROSSFADE transition fired on viewer-open
+        # (a heavy content swap: full image + filmstrip) could get stuck
+        # "in progress", holding a frame tick open forever and spinning the main
+        # loop at 100% of a core — the observed CPU spike on opening a photo.
+        # Instant page switches are fine for a viewer and remove the risk.
+        self.stack.set_transition_type(Gtk.StackTransitionType.NONE)
         self.stack.set_hexpand(True)
         self.stack.add_named(self._build_gallery_page(), "gallery")
         self.stack.add_named(self._build_full_page(), "full")
