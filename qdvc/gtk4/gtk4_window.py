@@ -669,10 +669,27 @@ class MainWindow(Adw.ApplicationWindow):
 
         self.full_picture = Gtk.Picture()
         self.full_picture.set_can_shrink(True)
+        self.full_picture.set_content_fit(Gtk.ContentFit.CONTAIN)
+        # Let the picture fill whatever the wrapper allocates; do NOT let it
+        # expand on its own or drive the layout from the image's intrinsic size.
+        self.full_picture.set_halign(Gtk.Align.FILL)
+        self.full_picture.set_valign(Gtk.Align.FILL)
         self.full_picture.set_hexpand(True)
         self.full_picture.set_vexpand(True)
-        self.full_picture.set_content_fit(Gtk.ContentFit.CONTAIN)
-        self.full_picture.set_focusable(True)
+
+        # A wrapper whose size comes from the window layout (not the image). It
+        # expands to fill the content area and clips, so the picture always has
+        # a definite allocation. This breaks a GTK4 measure/allocate cycle where
+        # a can_shrink CONTAIN picture and a variable-height sibling caption
+        # keep renegotiating size forever — the cause of the ~13% CPU in the
+        # viewer (main thread pinned inside GTK's C render loop).
+        pic_area = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
+        pic_area.set_hexpand(True)
+        pic_area.set_vexpand(True)
+        pic_area.set_overflow(Gtk.Overflow.HIDDEN)
+        pic_area.set_focusable(True)
+        pic_area.append(self.full_picture)
+        self._pic_area = pic_area
 
         self.full_caption = Gtk.Label()
         self.full_caption.set_ellipsize(Pango.EllipsizeMode.MIDDLE)
@@ -681,11 +698,14 @@ class MainWindow(Adw.ApplicationWindow):
         self.full_caption.add_css_class("tadaima-caption")
         caption_bar = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL)
         caption_bar.add_css_class("tadaima-caption-bar")
+        # Fixed vertical footprint so the caption never changes the picture
+        # area's height (another way the layout could fail to settle).
+        caption_bar.set_vexpand(False)
         self.full_caption.set_hexpand(True)
         caption_bar.append(self.full_caption)
 
         content = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
-        content.append(self.full_picture)
+        content.append(pic_area)
         content.append(caption_bar)
         toolbar_view.set_content(content)
 
@@ -1208,9 +1228,9 @@ class MainWindow(Adw.ApplicationWindow):
         self._build_filmstrip()
         self._show_full_at(self._full_index)
         self.stack.set_visible_child_name("full")
-        # Move focus onto the picture so the Back button isn't auto-focused, and
-        # so the ←/→ key controller on the full page receives keystrokes.
-        GLib.idle_add(self.full_picture.grab_focus)
+        # Move focus onto the picture area so the Back button isn't auto-focused
+        # and the ←/→ key controller on the full page receives keystrokes.
+        GLib.idle_add(self._pic_area.grab_focus)
         self._refresh_actions()
 
     # ================================================ full view + filmstrip

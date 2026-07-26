@@ -277,6 +277,27 @@ scan thread or a stray GSource is still around. The detail area must actually
 gallery's `detail_row` box are `hexpand=True`, the info revealer is
 `hexpand=False`.
 
+## Viewer CPU (layout-loop) — diagnosis & fix
+
+Symptom: opening the photo viewer pushed CPU to ~13% and it stayed there.
+`py-spy top` showed the main thread 100% inside `Gio.Application.run` with 0%
+in any app Python — i.e. the time was in GTK/GSK C code, not our code. It
+survived both `GSK_RENDERER=cairo` and `--no-filmstrip`, which ruled out the GL
+driver and the filmstrip. That profile is the signature of a **layout
+measure/allocate cycle that never settles**: a widget keeps renegotiating size,
+so GTK schedules a new frame every tick.
+
+The cause was the full-view image: a `Gtk.Picture` with `can_shrink=True` +
+`CONTAIN` + `vexpand`, stacked in a vertical `Gtk.Box` directly beside the
+variable-height caption label. The picture's height-for-width and the caption's
+size could disagree indefinitely. Fix: the picture now lives in a dedicated
+wrapper box (`_pic_area`, `hexpand`/`vexpand`, `overflow=HIDDEN`) that takes its
+size from the window layout rather than the image's intrinsic size, and the
+caption bar is `vexpand=False` with a fixed footprint. With a definite
+allocation the layout settles in one pass and GTK stops requesting frames.
+Focus for ←/→ navigation moved from the picture to `_pic_area` (a focus ring on
+the picture could itself provoke redraws).
+
 ## Diagnosing idle CPU / I/O use
 
 If the app uses noticeable CPU or disk while idle (no scan running):
