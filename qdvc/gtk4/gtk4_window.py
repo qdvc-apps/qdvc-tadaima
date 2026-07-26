@@ -110,12 +110,15 @@ class MainWindow(Adw.ApplicationWindow):
         GLib.idle_add(self._start_background_scan)
 
         # Optional diagnostic: set QDVC_FRAME_DEBUG=1 to log how often the
-        # window repaints. If frames keep ticking with no interaction, some
-        # widget is driving a continuous redraw (the usual cause of idle CPU).
+        # window repaints. It only prints when frames are actually being drawn,
+        # and reports which page is visible — so if lines appear only after you
+        # open a photo, the viewer is driving a continuous redraw.
         if os.environ.get("QDVC_FRAME_DEBUG"):
             self._frame_count = 0
             self._frame_t0 = time.monotonic()
             self.connect("realize", self._install_frame_monitor)
+
+        self._maybe_start_stack_sampler()
 
     def _install_frame_monitor(self, *_a) -> None:
         clock = self.get_frame_clock()
@@ -126,12 +129,17 @@ class MainWindow(Adw.ApplicationWindow):
             self._frame_count += 1
             now = time.monotonic()
             if now - self._frame_t0 >= 1.0:
-                print(
-                    f"[tadaima][frames] {self._frame_count} paints/sec "
-                    f"(if this stays >0 with no interaction, something is "
-                    f"driving a continuous redraw)",
-                    flush=True,
-                )
+                if self._frame_count > 0:
+                    page = (
+                        self.stack.get_visible_child_name()
+                        if hasattr(self, "stack")
+                        else "?"
+                    )
+                    print(
+                        f"[tadaima][frames] {self._frame_count} paints/sec "
+                        f"(visible page: {page})",
+                        flush=True,
+                    )
                 self._frame_count = 0
                 self._frame_t0 = now
 
@@ -140,6 +148,41 @@ class MainWindow(Adw.ApplicationWindow):
         # force continuous frames (causing the very spin we're diagnosing). The
         # monitor is passive: "after-paint" fires only when GTK is already
         # painting, so a nonzero rate at idle is itself the smoking gun.
+
+    def _maybe_start_stack_sampler(self) -> None:
+        """QDVC_STACK_DEBUG=1: periodically print the main thread's Python
+        stack from a background thread. If the same app function keeps showing
+        up, that's the CPU culprit; if it's always parked in the GLib main
+        loop, the cost is in GTK/GSK C code (rendering/layout), not our Python.
+        """
+        if not os.environ.get("QDVC_STACK_DEBUG"):
+            return
+        import sys as _sys
+        import threading as _th
+        import traceback as _tb
+
+        main_id = _th.get_ident()
+
+        def sampler():
+            while not self._closing:
+                time.sleep(0.5)
+                frames = _sys._current_frames()
+                fr = frames.get(main_id)
+                if fr is None:
+                    continue
+                stack = _tb.extract_stack(fr)
+                # Print the innermost few frames — enough to identify a loop.
+                tail = stack[-6:]
+                print("[tadaima][stack] main thread:", flush=True)
+                for frm in tail:
+                    print(
+                        f"    {os.path.basename(frm.filename)}:{frm.lineno} "
+                        f"{frm.name}: {frm.line}",
+                        flush=True,
+                    )
+
+        t = _th.Thread(target=sampler, daemon=True)
+        t.start()
 
     # ================================================================= UI
     def _build_ui(self) -> None:

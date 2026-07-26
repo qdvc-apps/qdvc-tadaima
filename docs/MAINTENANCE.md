@@ -282,11 +282,19 @@ gallery's `detail_row` box are `hexpand=True`, the info revealer is
 If the app uses noticeable CPU or disk while idle (no scan running):
 
 - **Rendering?** Run `QDVC_FRAME_DEBUG=1 python3 qdvc_tadaima.py`. A passive
-  frame-clock monitor logs `[tadaima][frames] N paints/sec`; with no
-  interaction this should be 0. Nonzero → a widget is repainting every frame
-  (cross-check with `GTK_DEBUG=interactive`, Visual tab → "Show Graphic
-  Updates"). Note that a spike that *starts in the photo viewer and persists
-  after returning to the library* points at the full-size image: see below.
+  frame-clock monitor logs `[tadaima][frames] N paints/sec (visible page: …)`
+  **only when frames are actually drawn**. If lines appear only after you open
+  a photo (visible page: full), the viewer is driving a continuous redraw.
+  Cross-check with `GTK_DEBUG=interactive` → Visual → "Show Graphic Updates".
+
+- **Python loop or C rendering?** Run `QDVC_STACK_DEBUG=1 python3
+  qdvc_tadaima.py`. A background thread prints the main thread's Python stack
+  every 0.5s. If the same app function (e.g. in `_show_full_at`,
+  `_update_info_panel`, `read_metadata`) keeps appearing, that Python code is
+  the culprit. If the stack is always parked in the GLib main loop
+  (`…main_context_iteration`/`run`), the CPU is in GTK/GSK C code
+  (rendering/layout), not our Python — pursue it with the frame monitor and the
+  inspector instead.
 
 - **Isolate the filmstrip.** Run `python3 qdvc_tadaima.py --no-filmstrip`
   (sets `QDVC_NO_FILMSTRIP=1`). The photo viewer then omits the filmstrip
