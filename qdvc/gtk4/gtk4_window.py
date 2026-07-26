@@ -106,6 +106,38 @@ class MainWindow(Adw.ApplicationWindow):
 
         GLib.idle_add(self._start_background_scan)
 
+        # Optional diagnostic: set QDVC_FRAME_DEBUG=1 to log how often the
+        # window repaints. If frames keep ticking with no interaction, some
+        # widget is driving a continuous redraw (the usual cause of idle CPU).
+        if os.environ.get("QDVC_FRAME_DEBUG"):
+            self._frame_count = 0
+            self._frame_t0 = time.monotonic()
+            self.connect("realize", self._install_frame_monitor)
+
+    def _install_frame_monitor(self, *_a) -> None:
+        clock = self.get_frame_clock()
+        if clock is None:
+            return
+
+        def on_after_paint(_clock):
+            self._frame_count += 1
+            now = time.monotonic()
+            if now - self._frame_t0 >= 1.0:
+                print(
+                    f"[tadaima][frames] {self._frame_count} paints/sec "
+                    f"(if this stays >0 with no interaction, something is "
+                    f"driving a continuous redraw)",
+                    flush=True,
+                )
+                self._frame_count = 0
+                self._frame_t0 = now
+
+        clock.connect("after-paint", on_after_paint)
+        # NOTE: deliberately do NOT call clock.begin_updating() — that would
+        # force continuous frames (causing the very spin we're diagnosing). The
+        # monitor is passive: "after-paint" fires only when GTK is already
+        # painting, so a nonzero rate at idle is itself the smoking gun.
+
     # ================================================================= UI
     def _build_ui(self) -> None:
         self.stack = Gtk.Stack()
@@ -1131,7 +1163,7 @@ class MainWindow(Adw.ApplicationWindow):
         for i, rec in enumerate(self._full_images):
             btn = Gtk.Button()
             btn.add_css_class("flat")
-            # Filmstrip uses the square derivative (every image now has one).
+            # Filmstrip uses the square derivative (every image has one).
             src = None
             if rec.square_path and os.path.exists(rec.square_path):
                 src = rec.square_path
@@ -1140,11 +1172,17 @@ class MainWindow(Adw.ApplicationWindow):
             else:
                 src = rec.path
             pic = Gtk.Picture()
-            pic.set_content_fit(Gtk.ContentFit.COVER)
+            # CONTAIN + an immutable Gdk.Texture: the square derivative is
+            # already FILMSTRIP_H-ish, so no per-frame rescale (set_filename +
+            # COVER could rescale the paintable on every composite).
+            pic.set_content_fit(Gtk.ContentFit.CONTAIN)
             pic.set_size_request(FILMSTRIP_H, FILMSTRIP_H)
             pic.add_css_class("tadaima-film-thumb")
             if src and os.path.exists(src):
-                pic.set_filename(src)
+                try:
+                    pic.set_paintable(Gdk.Texture.new_from_filename(src))
+                except Exception:
+                    pic.set_filename(src)
             pic.set_cursor(Gdk.Cursor.new_from_name("pointer"))
             btn.set_child(pic)
             btn.set_tooltip_text(rec.name)
@@ -1164,8 +1202,19 @@ class MainWindow(Adw.ApplicationWindow):
             if (rec.screen_path and os.path.exists(rec.screen_path))
             else rec.path
         )
+        # Load as an immutable Gdk.Texture (like the thumbnails) rather than
+        # Gtk.Picture.set_filename. A texture is a fixed GPU image the renderer
+        # samples cheaply; set_filename yields a pixbuf-backed paintable that,
+        # combined with can_shrink + CONTAIN scaling, can make some GL drivers
+        # re-scale/re-upload every composite — a steady CPU cost that persists
+        # as long as the (still-realized) viewer page holds the paintable.
         if os.path.exists(show):
-            self.full_picture.set_filename(show)
+            try:
+                self.full_picture.set_paintable(
+                    Gdk.Texture.new_from_filename(show)
+                )
+            except Exception:
+                self.full_picture.set_filename(show)
         self.full_caption.set_text(
             f"{self._metadata_line(rec)}    ·    "
             f"{idx + 1} of {len(self._full_images)}"
@@ -1224,6 +1273,16 @@ class MainWindow(Adw.ApplicationWindow):
     # ============================================================ actions
     def on_back(self) -> None:
         self.stack.set_visible_child_name("gallery")
+        # Release the large full-size paintable and the filmstrip textures so
+        # nothing lingers in the (still-realized) viewer page consuming render
+        # resources after we return to the library.
+        self.full_picture.set_paintable(None)
+        child = self.filmstrip.get_first_child()
+        while child is not None:
+            nxt = child.get_next_sibling()
+            self.filmstrip.remove(child)
+            child = nxt
+        self._film_widgets = []
         if self.selected_image_path is not None:
             child = self.flow.get_first_child()
             while child is not None:
@@ -1581,7 +1640,11 @@ class MainWindow(Adw.ApplicationWindow):
     # ============================================================ misc
     def _on_paned_moved(self, paned, _param) -> None:
         pos = paned.get_position()
-        if pos > 0:
+        # Only persist a genuinely new position. notify::position can fire
+        # repeatedly (including transiently during layout); writing config on
+        # every one of those would be needless disk I/O.
+        if pos > 0 and pos != getattr(self, "_last_saved_sidebar_width", None):
+            self._last_saved_sidebar_width = pos
             self.config.sidebar_width = pos
 
     def _refresh_actions(self) -> None:

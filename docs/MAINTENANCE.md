@@ -277,6 +277,40 @@ scan thread or a stray GSource is still around. The detail area must actually
 gallery's `detail_row` box are `hexpand=True`, the info revealer is
 `hexpand=False`.
 
+## Diagnosing idle CPU / I/O use
+
+If the app uses noticeable CPU or disk while idle (no scan running):
+
+- **Rendering?** Run `QDVC_FRAME_DEBUG=1 python3 qdvc_tadaima.py`. A passive
+  frame-clock monitor logs `[tadaima][frames] N paints/sec`; with no
+  interaction this should be 0. Nonzero → a widget is repainting every frame
+  (cross-check with `GTK_DEBUG=interactive`, Visual tab → "Show Graphic
+  Updates"). Note that a spike that *starts in the photo viewer and persists
+  after returning to the library* points at the full-size image: see below.
+
+- **Full-size images use `Gdk.Texture`, not `set_filename`.** `_show_full_at`
+  and the filmstrip load images via `Gdk.Texture.new_from_filename` (immutable
+  GPU textures the renderer samples cheaply) rather than
+  `Gtk.Picture.set_filename`. A pixbuf-backed paintable combined with
+  `can_shrink` + `CONTAIN`/`COVER` scaling can make some GL drivers
+  re-scale/re-upload the texture on every composite — a steady 10–15% CPU cost
+  that persists because the (crossfade) `Gtk.Stack` keeps the viewer page
+  realized. `on_back` additionally clears the full picture's paintable and the
+  filmstrip so nothing large lingers.
+- **Disk writes?** Run `QDVC_IO_DEBUG=1 python3 qdvc_tadaima.py`. Every
+  `config.save()` logs a line. If these appear while you sit idle or merely
+  drag the sidebar divider, config is being rewritten too often. `Config.set`
+  now skips writes when the value is unchanged, and `_on_paned_moved` only
+  persists a genuinely new sidebar width, so repeated identical notifications
+  no longer hit disk.
+- **Interpreting `btop`:** the process IO/R and IO/W columns are *cumulative
+  totals since launch*, not live rates — a few hundred KiB after loading
+  thumbnails and writing the index/config once is normal and does not indicate
+  ongoing activity. Likewise a GTK4 app normally shows ~15–30 threads (GL/render
+  worker pools, the GIO thread pool, GLib workers); the count alone is not a
+  problem — most are parked. To see *live* activity use `py-spy dump --pid
+  <pid>` (Python stacks) or `strace -f -p <pid> -e trace=read,write,openat`.
+
 ## The magic numbers
 
 `THUMB_MAX_PX = 500`, `SCREEN_MAX_PX = 2000`, `SQUARE_PX = 32` live in

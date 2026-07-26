@@ -117,6 +117,10 @@ class Config:
         with open(tmp, "w", encoding="utf-8") as fh:
             yaml.safe_dump(self._data, fh, default_flow_style=False, sort_keys=True)
         os.replace(tmp, path)  # atomic
+        if os.environ.get("QDVC_IO_DEBUG"):
+            import time as _t
+
+            print(f"[tadaima][io] config.save() at {_t.monotonic():.2f}", flush=True)
 
     # --- generic accessors ----------------------------------------------
     def get(self, key: str, default: Any = None) -> Any:
@@ -127,6 +131,11 @@ class Config:
         return DEFAULTS.get(key)
 
     def set(self, key: str, value: Any) -> None:
+        # Skip the disk write if the value is unchanged — avoids a storm of
+        # identical YAML writes when a setter is hit repeatedly (e.g. paned
+        # position notifications firing on every layout tick).
+        if key in self._data and self._data[key] == value:
+            return
         self._data[key] = value
         self.save()
 
