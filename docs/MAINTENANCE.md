@@ -288,6 +288,13 @@ If the app uses noticeable CPU or disk while idle (no scan running):
   Updates"). Note that a spike that *starts in the photo viewer and persists
   after returning to the library* points at the full-size image: see below.
 
+- **Isolate the filmstrip.** Run `python3 qdvc_tadaima.py --no-filmstrip`
+  (sets `QDVC_NO_FILMSTRIP=1`). The photo viewer then omits the filmstrip
+  entirely — prev/next navigation stays on a thin bar — so you can A/B whether
+  the filmstrip is responsible for viewer CPU use. If CPU is normal with the
+  flag and high without it, the filmstrip (its per-photo `Gtk.Picture`s /
+  scroller) is the cause.
+
 - **Full-size images use `Gdk.Texture`, not `set_filename`.** `_show_full_at`
   and the filmstrip load images via `Gdk.Texture.new_from_filename` (immutable
   GPU textures the renderer samples cheaply) rather than

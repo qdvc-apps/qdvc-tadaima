@@ -91,6 +91,9 @@ class MainWindow(Adw.ApplicationWindow):
         self._scanned_folders_win: Adw.Window | None = None
         self._thumb_zoom = self.config.thumb_zoom
         self._pending_selected = self.config.selected_folder
+        # Diagnostic: --no-filmstrip (QDVC_NO_FILMSTRIP=1) hides the viewer
+        # filmstrip entirely, to isolate whether it is responsible for CPU use.
+        self._filmstrip_enabled = not os.environ.get("QDVC_NO_FILMSTRIP")
 
         win = self.config.get("window", {"width": 1100, "height": 720})
         self.set_default_size(int(win.get("width", 1100)), int(win.get("height", 720)))
@@ -603,7 +606,23 @@ class MainWindow(Adw.ApplicationWindow):
         self.next_btn.set_action_name("win.next-photo")
         strip_row.append(self.next_btn)
 
-        toolbar_view.add_top_bar(strip_row)
+        # The filmstrip can be disabled via --no-filmstrip for CPU isolation.
+        # The prev/next buttons stay available on their own thin bar so photo
+        # navigation still works without the strip.
+        if self._filmstrip_enabled:
+            toolbar_view.add_top_bar(strip_row)
+        else:
+            nav_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=4)
+            nav_row.add_css_class("tadaima-filmstrip-bar")
+            strip_row.remove(self.prev_btn)
+            strip_row.remove(strip_scroller)
+            strip_row.remove(self.next_btn)
+            nav_row.append(self.prev_btn)
+            spacer = Gtk.Box()
+            spacer.set_hexpand(True)
+            nav_row.append(spacer)
+            nav_row.append(self.next_btn)
+            toolbar_view.add_top_bar(nav_row)
 
         self.full_picture = Gtk.Picture()
         self.full_picture.set_can_shrink(True)
@@ -1153,6 +1172,9 @@ class MainWindow(Adw.ApplicationWindow):
 
     # ================================================ full view + filmstrip
     def _build_filmstrip(self) -> None:
+        if not self._filmstrip_enabled:
+            self._film_widgets = []
+            return
         child = self.filmstrip.get_first_child()
         while child is not None:
             nxt = child.get_next_sibling()

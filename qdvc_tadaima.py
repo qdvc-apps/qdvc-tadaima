@@ -9,15 +9,21 @@ Selects the UI toolkit *before importing any GTK*. Backend order:
 
 Only the GTK 4 front-end exists in Tadaima (deviation from the shared spec, per
 the app brief), so ``--gtk3`` prints a note and falls through to GTK 4.
+
+Diagnostic flags:
+  --no-filmstrip   Run the photo viewer without the filmstrip (sets
+                   QDVC_NO_FILMSTRIP=1). Useful for isolating whether the
+                   filmstrip is responsible for CPU use in the viewer.
 """
 
 from __future__ import annotations
 
+import os
 import sys
 
 
 def _select_backend(argv: list[str]) -> tuple[str, list[str]]:
-    """Return (backend, remaining_argv) with the flag consumed."""
+    """Return (backend, remaining_argv) with recognised flags consumed."""
     remaining = [argv[0]]
     backend: str | None = None
     for arg in argv[1:]:
@@ -25,6 +31,10 @@ def _select_backend(argv: list[str]) -> tuple[str, list[str]]:
             backend = "gtk4"
         elif arg == "--gtk3":
             backend = "gtk3"
+        elif arg == "--no-filmstrip":
+            # Passed to the front-end via the environment so we don't have to
+            # thread it through the app/window constructors.
+            os.environ["QDVC_NO_FILMSTRIP"] = "1"
         else:
             remaining.append(arg)
 
