@@ -33,7 +33,8 @@ thumbnails and its index exclusively to a disposable cache under
   gallery and the viewer) opens a right-hand information sidebar
   showing the full metadata (no image preview).
 - **Session memory.** The sidebar remembers which folders you had expanded, your
-  selection, and your focus between runs.
+  selection, and your focus between runs. On launch it opens the way to the
+  folder you were last looking at, selects it and scrolls it into view.
 - **Folder counts.** Every folder shows, on the right, how many images it
   contains recursively (children, grandchildren, and deeper).
 - **Photo-crop folder icons.** A folder that has images directly inside it gets
@@ -75,8 +76,8 @@ Supported formats: JPEG, PNG, HEIC (HEIC is best-effort; see below).
 - **PyGObject** with **GTK 4** and **libadwaita**
   (`gir1.2-gtk-4.0`, `gir1.2-adw-1`, `python3-gi`)
 - **PyYAML**
-- **Pillow** for thumbnail generation (optional but strongly recommended;
-  without it, Tadaima falls back to showing source images directly)
+- **Pillow** for thumbnail generation (photos are shown once their thumbnails
+  exist, so in practice it is required)
 - **pillow-heif** (optional) for HEIC support
 
 On Debian/Ubuntu:
@@ -88,6 +89,33 @@ pip install --user pillow-heif   # optional, for HEIC
 
 ## Install & run
 
+Install it for your user (no root needed) so it appears in Activities and the
+Dock with its own icon:
+
+```sh
+scripts/build-app.sh --install
+```
+
+The script checks the dependencies, runs the tests, and installs a copy to
+`~/.local/share/qdvc-tadaima/`, a `qdvc-tadaima` launcher to `~/.local/bin/`,
+the menu entry `qdvc.Tadaima.desktop` and the icons. The installed copy is
+independent of this checkout, so run the script again after pulling changes;
+if Tadaima is running, it is closed (saving its state) and restarted. Other
+options:
+
+```sh
+scripts/build-app.sh               # check, test and stage in build/ only
+scripts/build-app.sh --no-tests    # skip the tests
+scripts/build-app.sh --run         # start the app afterwards
+scripts/build-app.sh --uninstall   # remove it again (keeps config and cache)
+PREFIX=/opt/qdvc scripts/build-app.sh --install   # install elsewhere
+```
+
+If you made a `~/.local/share/applications/qdvc-tadaima.desktop` launcher by
+hand as earlier versions of this README described, the script removes it.
+
+To run straight from the checkout instead:
+
 ```sh
 python3 qdvc_tadaima.py
 ```
@@ -95,33 +123,6 @@ python3 qdvc_tadaima.py
 The `--gtk4` flag and the `ui_backend` preference exist for parity with the
 QDVC app family. Only the GTK 4 front-end is implemented in Tadaima; `--gtk3`
 prints a note and falls through to GTK 4.
-
-## `.desktop` launcher
-
-Install a launcher at
-`~/.local/share/applications/qdvc-tadaima.desktop`:
-
-```ini
-[Desktop Entry]
-Type=Application
-Name=QDVC Tadaima
-Comment=Read-only photo browser for folders you choose
-Exec=python3 /full/path/to/qdvc_tadaima.py %U
-Path=/full/path/to
-Icon=emblem-photos
-Terminal=false
-Categories=Graphics;Viewer;GTK;
-StartupNotify=true
-StartupWMClass=qdvc-tadaima
-```
-
-`StartupWMClass=qdvc-tadaima` must match the `GLib.set_prgname("qdvc-tadaima")`
-call in the app. After editing, refresh and validate:
-
-```sh
-update-desktop-database ~/.local/share/applications
-desktop-file-validate ~/.local/share/applications/qdvc-tadaima.desktop
-```
 
 ## Data & privacy
 

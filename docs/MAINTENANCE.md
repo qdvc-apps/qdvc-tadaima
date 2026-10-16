@@ -41,15 +41,21 @@ qdvc-tadaima/
         models.py              ImageRecord, FolderNode dataclasses.
         naming.py              cache_key / extension / derivative-name helpers.
         cache.py               Cache dir, Index (JSON), scan + thumbnail gen.
-        tree.py                Build filtered hierarchy; focus/ancestor logic.
+        tree.py                Build filtered hierarchy; focus/ancestor logic;
+                               reveal/forget helpers for sidebar expansion.
         ui_prefs.py            SHORTCUTS table, density specs, formatting.
         platform_utils.py      open/reveal helpers (read-only OS actions).
         gtk4/                  GTK 4 front-end (all gtk4_*).
-            gtk4_app.py        Adw.Application; prgname, icon, accels.
+            gtk4_app.py        Adw.Application; prgname, icon, accels, app.quit.
             gtk4_window.py     Main window: split view, sidebar, gallery, full.
             gtk4_actions.py    win.* Gio.SimpleActions.
             gtk4_preferences.py Adw.PreferencesWindow (live-apply density).
             gtk4_shortcuts.py  Shortcuts window from SHORTCUTS.
+    data/
+        qdvc.Tadaima.desktop.in    Menu entry; build-app.sh fills in @BINDIR@.
+        icons/hicolor/             App icon + symbolic variant (a theme root).
+    scripts/build-app.sh       Check deps, run tests, stage, install/uninstall.
+    tools/make_icon.py         Generates the icons in data/icons.
     docs/MAINTENANCE.md
     tests/                     Display-free tests.
     README.md
@@ -125,10 +131,12 @@ expands the selected folder and ← collapses it (`_on_sidebar_key`).
 `_scan_worker` runs off the main thread. It calls `_live_refresh(True)` via
 `GLib.idle_add` right after `sync_index` (structure may have changed, so the
 sidebar tree is rebuilt once and subfolders appear). Every subsequent mid-scan
-refresh, and the end-of-scan refresh, use `_live_refresh(rebuild_tree=False)`,
-which refreshes only the open folder's thumbnail grid and does **not** rebuild
-the tree store — rebuilding it mid-scan collapsed whatever the user had expanded
-(the "retreat" bug) and blocked digging into folders during a scan. Regeneration
+refresh uses `_live_refresh(rebuild_tree=False)`, which refreshes only the
+open folder's thumbnail grid and does **not** rebuild the tree store; the
+end-of-scan refresh rebuilds it once more so folder counts are final. (Frequent
+mid-scan rebuilds made the tree flicker shut and reopen under the user — the
+"retreat" bug — and blocked digging into folders during a scan; every rebuild
+restores the remembered expansion, see *Persistent sidebar state*.) Regeneration
 is gated by `has_all_derivatives`, so a normal launch only (re)generates for
 images actually missing a derivative — never the whole library.
 
@@ -222,9 +230,32 @@ sessions via `Config.expanded_folders` / `selected_folder` / `focus_folder`.
 row's `notify::expanded`). Because rebuilding the tree store collapses every
 row, `_populate_sidebar` schedules `_reapply_sidebar_state` after *every*
 rebuild — including the live refreshes a background scan triggers — to re-expand
-the remembered folders and re-select the remembered folder. Without this, the
-startup scan would wipe the just-restored expansion. A `_restoring_state` guard
-stops the programmatic re-expansion from rewriting what it is restoring.
+the remembered folders, re-select the remembered folder and scroll it into view.
+A `_restoring_state` guard stops the programmatic re-expansion from rewriting
+what it is restoring.
+
+**Torn-down rows.** When the store is rebuilt (or a parent collapses), GTK
+destroys the old `Gtk.TreeListRow`s, and each one notifies `expanded` = False.
+On GTK 4.14 (checked against libgtk-4 directly) a destroyed row *still returns
+its item*, so the old "ignore rows without an item" check let every rebuild
+read as the user collapsing every visible folder: the startup scan's rebuild
+emptied `_expanded` and saved that, which is why the app reopened with the
+right photos but a fully collapsed sidebar. `_on_row_expanded_changed` now
+ignores a collapse from a row that is no longer `is_expandable()` (a live row
+the user collapses always still is), and `_populate_sidebar` swaps the store's
+contents in one `splice` under a `_rebuilding_sidebar` guard.
+`tests/test_sidebar_state.py` pins this down with rows that behave like GTK's.
+A *real* collapse forgets the folders open inside it too (`forget_subtree`), so
+they don't spring back open at the next rebuild.
+
+**Startup.** `_restore_session_state` calls `_reapply_sidebar_state(reveal=True)`,
+which also expands every folder between the focused row and the remembered
+folder (`tree.reveal_chain`), so the last folder is shown and selected even
+when its parents were not saved as expanded (such as a config written by the
+bug above). The scroll waits for the window's next `after-paint`
+(`_scroll_sidebar_to`): before the list has been laid out GTK cannot scroll to
+a row. `_on_tree_selected` only rebuilds the grid when the selected *folder*
+changes, not when its position shifts because rows above it opened or closed.
 
 ## Thumbnail grid — the slot model
 
@@ -425,6 +456,9 @@ force regeneration.
 - **Pure-model tests** (`tests/test_tree.py`, `tests/test_core.py`): build temp
   folders/images and assert on tree, config, index, and derivatives — no
   display.
+- **Sidebar state** (`tests/test_sidebar_state.py`): runs the real
+  `MainWindow` expansion/restore methods against stand-in tree rows that
+  behave like GTK's (including torn-down rows).
 - **Import smoke test** (`tests/test_import_smoke.py`): a permissive fake `gi`
   lets every `qdvc.gtk4.*` module import, exercising class bodies and top-level
   code.
@@ -433,13 +467,32 @@ Pre-ship check:
 
 ```sh
 python3 -m py_compile qdvc/*.py qdvc/gtk4/*.py qdvc_tadaima.py
-python3 tests/test_tree.py
-python3 tests/test_core.py
-python3 tests/test_import_smoke.py
+for t in tests/test_*.py; do python3 "$t"; done
 ```
+
+`scripts/build-app.sh` runs the same tests and refuses to install if any fail.
 
 ## Deployment
 
-Copy the tree anywhere and run `python3 qdvc_tadaima.py`, or install the
-`.desktop` launcher (see README). `set_prgname("qdvc-tadaima")` must match the
+`scripts/build-app.sh --install` checks the dependencies, runs the tests,
+stages a copy in `build/` and installs it per user: the program to
+`~/.local/share/qdvc-tadaima/app/`, a launcher to `~/.local/bin/qdvc-tadaima`,
+`qdvc.Tadaima.desktop` (from `data/qdvc.Tadaima.desktop.in`) and the icons into
+`~/.local/share`. The installed copy is independent of the checkout. If the app
+is running, the script quits it first through the `app.quit` action over D-Bus
+(the window closes normally, so its state is saved) and starts it again after.
+It also removes the hand-written `qdvc-tadaima.desktop` launcher that earlier
+versions of the README described. `--uninstall` removes everything it installed
+but never the config or cache. `set_prgname("qdvc-tadaima")` must match the
 launcher's `StartupWMClass`.
+
+## App icon
+
+`tools/make_icon.py` writes `data/icons/hicolor/scalable/apps/qdvc.Tadaima.svg`
+and its 16 × 16 symbolic variant; edit the script, not the SVGs. It follows the
+QDVC family's GNOME icons (a light object with a darker bottom edge plus a round
+badge, on the Adwaita palette): two photo prints, the front one a landscape,
+with an orange badge holding a house (tadaima: "I'm home"). The app looks the
+icon up by its app ID and, when running from a checkout, adds `data/icons` to
+the icon theme's search path; if neither has it, it falls back to the stock
+`emblem-photos`.

@@ -1,0 +1,12 @@
+[Desktop Entry]
+Type=Application
+Name=QDVC Tadaima
+GenericName=Photo Browser
+Comment=Browse the photos in folders you choose, without ever changing them
+Exec=@BINDIR@/qdvc-tadaima
+Icon=qdvc.Tadaima
+Terminal=false
+Categories=Graphics;Viewer;Photography;GTK;
+Keywords=photo;photos;picture;image;gallery;thumbnail;viewer;
+StartupNotify=true
+StartupWMClass=qdvc-tadaima

@@ -93,6 +93,41 @@ def find_node(root: FolderNode, path: str) -> FolderNode | None:
     return None
 
 
+def is_within(ancestor: str, descendant: str) -> bool:
+    """True if *descendant* is *ancestor* or lies beneath it."""
+    a = os.path.normpath(ancestor)
+    d = os.path.normpath(descendant)
+    if a == d:
+        return True
+    return d.startswith(a.rstrip(os.sep) + os.sep)
+
+
+def reveal_chain(focus_path: str, target: str) -> list[str]:
+    """Folders to expand, top-down, so *target* shows in a tree whose top row
+    is *focus_path*: the focus itself down to *target*'s parent. Empty when
+    *target* is the focus or lies outside it."""
+    focus = os.path.normpath(focus_path)
+    target = os.path.normpath(target)
+    if target == focus or not is_within(focus, target):
+        return []
+    chain: list[str] = []
+    p = os.path.dirname(target)
+    while is_within(focus, p):
+        chain.append(p)
+        parent = os.path.dirname(p)
+        if p == focus or parent == p:
+            break
+        p = parent
+    chain.reverse()
+    return chain
+
+
+def forget_subtree(expanded: set[str], path: str) -> None:
+    """Drop *path* and every folder beneath it from the *expanded* set (in
+    place): collapsing a folder forgets what was open inside it."""
+    expanded.difference_update([p for p in expanded if is_within(path, p)])
+
+
 def ancestor_chain(root: FolderNode, focus_path: str) -> list[FolderNode]:
     """Flat list of ancestor nodes from the tree root down to (but excluding)
     the focused node, in order. Used to render the italic flattened header."""

@@ -1,0 +1,25 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="128" height="128" viewBox="0 0 128 128">
+<defs>
+<linearGradient id="side" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#c0bfbc"/><stop offset="1" stop-color="#9a9996"/></linearGradient>
+<linearGradient id="sky" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#62a0ea"/><stop offset="1" stop-color="#99c1f1"/></linearGradient>
+<linearGradient id="badge" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#ffa348"/><stop offset="1" stop-color="#e66100"/></linearGradient>
+<clipPath id="photo"><rect x="19" y="33" width="80" height="56" rx="2"/></clipPath>
+</defs>
+<g transform="rotate(-9 64 60)">
+<rect x="22" y="22" width="94" height="74" rx="6" fill="url(#side)"/>
+<rect x="22" y="18" width="94" height="74" rx="6" fill="#f6f5f4"/>
+<rect x="29" y="25" width="80" height="56" rx="2" fill="#deddda"/>
+</g>
+<rect x="12" y="31" width="94" height="74" rx="6" fill="url(#side)"/>
+<rect x="12" y="26" width="94" height="74" rx="6" fill="#ffffff"/>
+<g clip-path="url(#photo)">
+<rect x="19" y="33" width="80" height="56" fill="url(#sky)"/>
+<circle cx="41" cy="51" r="10" fill="#f8e45c" fill-opacity="0.45"/>
+<circle cx="41" cy="51" r="7" fill="#f6d32d"/>
+<path d="M17 77 C33 63 49 61 65 69 C77 75 89 63 101 65 V91 H17 z" fill="#33d17a"/>
+<path d="M17 83 C37 73 59 73 79 81 C87 84 93 85 101 83 V91 H17 z" fill="#26a269"/>
+</g>
+<circle cx="96" cy="97" r="21" fill="#c64600"/>
+<circle cx="96" cy="94" r="21" fill="url(#badge)"/>
+<path d="M96 82 L109 94 H105 V105 H99 V98 H93 V105 H87 V94 H83 z" fill="#ffffff" stroke="#ffffff" stroke-width="2" stroke-linejoin="round"/>
+</svg>

@@ -28,7 +28,14 @@ from ..config import normalize_scanned_folders
 from ..metadata import human_size, read_metadata
 from ..models import FolderNode
 from ..platform_utils import reveal_in_file_manager
-from ..tree import ancestor_chain, build_tree, find_node
+from ..tree import (
+    ancestor_chain,
+    build_tree,
+    find_node,
+    forget_subtree,
+    is_within,
+    reveal_chain,
+)
 from ..ui_prefs import density_spec, format_count
 from .gtk4_actions import install_actions, set_enabled
 from .gtk4_items import FolderItem
@@ -43,15 +50,6 @@ FILMSTRIP_H = 64
 # than producing a super-tall row. Configurable; 150px for now.
 SLOT_WIDTH = 150
 SLOT_SPACING = 12
-
-
-def _within(ancestor: str, descendant: str) -> bool:
-    """True if *descendant* is *ancestor* or lies beneath it."""
-    a = os.path.normpath(ancestor)
-    d = os.path.normpath(descendant)
-    if a == d:
-        return True
-    return d.startswith(a.rstrip(os.sep) + os.sep)
 
 
 # How often the scan worker refreshes the visible tree/grid while running.
@@ -80,6 +78,15 @@ class MainWindow(Adw.ApplicationWindow):
         self._expanded: set[str] = set(self.config.expanded_folders)
         # Guard so programmatic restore doesn't thrash the persisted state.
         self._restoring_state = False
+        # True while _populate_sidebar empties and refills the root store. Every
+        # row torn down then reports notify::expanded = False, which must not be
+        # mistaken for the user collapsing it (see _on_row_expanded_changed).
+        self._rebuilding_sidebar = False
+        # Folder whose photos the grid currently shows (normalised path).
+        self._shown_folder_path: str | None = None
+        # A pending "scroll the sidebar to this folder after the next paint".
+        self._sidebar_scroll_path: str | None = None
+        self._sidebar_scroll_handler = 0
         self._closing = False
 
         # Full-view / filmstrip state.
@@ -103,7 +110,9 @@ class MainWindow(Adw.ApplicationWindow):
         win = self.config.get("window", {"width": 1100, "height": 720})
         self.set_default_size(int(win.get("width", 1100)), int(win.get("height", 720)))
         self.set_title(APP_NAME)
-        self.set_icon_name(ICON_NAME)
+        # Resolved by the application (its own icon, or a stock fallback).
+        self._icon_name = getattr(application, "icon_name", ICON_NAME)
+        self.set_icon_name(self._icon_name)
 
         install_actions(self)
         self._build_ui()
@@ -415,6 +424,7 @@ class MainWindow(Adw.ApplicationWindow):
         factory = Gtk.SignalListItemFactory()
         factory.connect("setup", self._tree_setup)
         factory.connect("bind", self._tree_bind)
+        factory.connect("unbind", self._tree_unbind)
 
         self.tree_view = Gtk.ListView(model=self._selection, factory=factory)
         self.tree_view.add_css_class("navigation-sidebar")
@@ -537,15 +547,38 @@ class MainWindow(Adw.ApplicationWindow):
         list_item._exp_handler = handler
         list_item._exp_row = row
 
+    def _tree_unbind(self, factory, list_item) -> None:
+        prev = getattr(list_item, "_exp_handler", None)
+        prev_row = getattr(list_item, "_exp_row", None)
+        if prev is not None and prev_row is not None:
+            try:
+                prev_row.disconnect(prev)
+            except (TypeError, RuntimeError):
+                pass
+        list_item._exp_handler = None
+        list_item._exp_row = None
+
     def _on_row_expanded_changed(self, row, _param) -> None:
         item = row.get_item()
-        if item is None:
+        if item is None or self._rebuilding_sidebar:
+            return
+        expanded = row.get_expanded()
+        # A row that is being destroyed (its store rebuilt, or a parent
+        # collapsed) also notifies expanded = False — and on current GTK it
+        # still returns its item. Only a live row can be collapsed by the user,
+        # and a live expanded row is always expandable; a destroyed one reports
+        # is_expandable() = False. Without this check every rebuild (the
+        # background scan does one right after launch) forgot every visible
+        # expanded folder and saved that, so the tree came back collapsed.
+        if not expanded and not row.is_expandable():
             return
         path = os.path.normpath(item.node.path)
-        if row.get_expanded():
+        if expanded:
             self._expanded.add(path)
         else:
-            self._expanded.discard(path)
+            # Collapsing a folder also forgets the folders open inside it, so
+            # they don't spring back open at the next rebuild.
+            forget_subtree(self._expanded, path)
         if not self._restoring_state:
             self._persist_sidebar_state()
 
@@ -950,15 +983,19 @@ class MainWindow(Adw.ApplicationWindow):
             self.tree_root.path
         )
 
-        self._root_store.remove_all()
-
+        items: list[FolderItem] = []
         # Flattened, italic ancestor rows above the focused node.
         if not focused_is_root:
             for anc in ancestor_chain(self.tree_root, focus_node.path):
-                self._root_store.append(FolderItem(anc, style="ancestor"))
-
+                items.append(FolderItem(anc, style="ancestor"))
         # The focused node itself, bold and expandable.
-        self._root_store.append(FolderItem(focus_node, style="focused"))
+        items.append(FolderItem(focus_node, style="focused"))
+
+        self._rebuilding_sidebar = True
+        try:
+            self._root_store.splice(0, self._root_store.get_n_items(), items)
+        finally:
+            self._rebuilding_sidebar = False
         self._refresh_actions()
 
         # Re-apply the remembered expansion and selection after the model
@@ -967,9 +1004,13 @@ class MainWindow(Adw.ApplicationWindow):
         # time — self._expanded is the single source of truth.
         GLib.idle_add(self._reapply_sidebar_state)
 
-    def _reapply_sidebar_state(self) -> bool:
+    def _reapply_sidebar_state(self, reveal: bool = False) -> bool:
         """Expand remembered folders and re-select the remembered folder after
-        the tree store has been (re)built."""
+        the tree store has been (re)built, scrolling it into view.
+
+        With *reveal* (at startup) the folders leading to the selected folder
+        are expanded too, so it is shown even if its parents were not
+        remembered as expanded."""
         if self._closing:
             return False
         self._restoring_state = True
@@ -982,15 +1023,72 @@ class MainWindow(Adw.ApplicationWindow):
                 else self._pending_selected
             )
             if target:
-                res = self._find_tree_row(target)
-                row = res[0] if res else None
+                if reveal:
+                    self._reveal_path(target)
+                row, pos = self._find_tree_row(target)
                 if row is not None:
-                    self._selection.set_selected(res[1])
-                    node = row.get_item().node
-                    self.selected_folder = node
+                    self._selection.set_selected(pos)
+                    self.selected_folder = self._fresh_node(row.get_item().node)
+                    self._scroll_sidebar_to(target)
         finally:
             self._restoring_state = False
         return False
+
+    def _reveal_path(self, path: str) -> None:
+        """Expand every folder from the focused row down to *path*'s parent, so
+        *path* has a row. Folders outside the focused subtree are left alone."""
+        for anc in reveal_chain(self.focus_path, path):
+            # Top-down: each expansion materialises the next folder's row.
+            row, _pos = self._find_tree_row(anc)
+            if row is None:
+                return
+            if row.is_expandable() and not row.get_expanded():
+                row.set_expanded(True)
+            self._expanded.add(anc)
+
+    def _scroll_sidebar_to(self, path: str) -> None:
+        """Scroll the sidebar so *path*'s row is in view.
+
+        Deferred until after the next paint: right after the store is rebuilt
+        (and at startup) the list has not been laid out yet, and GTK cannot
+        scroll to a row it has not allocated."""
+        self._sidebar_scroll_path = os.path.normpath(path)
+        if self._sidebar_scroll_handler:
+            return  # already waiting for a paint; it will use the newest path
+        clock = self.get_frame_clock()
+        if clock is None:  # not realized yet
+            GLib.idle_add(self._do_sidebar_scroll)
+            return
+
+        def after_paint(frame_clock):
+            frame_clock.disconnect(self._sidebar_scroll_handler)
+            self._sidebar_scroll_handler = 0
+            GLib.idle_add(self._do_sidebar_scroll)
+
+        self._sidebar_scroll_handler = clock.connect("after-paint", after_paint)
+        self.tree_view.queue_draw()
+
+    def _do_sidebar_scroll(self) -> bool:
+        path, self._sidebar_scroll_path = self._sidebar_scroll_path, None
+        if self._closing or not path:
+            return False
+        row, pos = self._find_tree_row(path)
+        if row is None:
+            return False
+        if hasattr(self.tree_view, "scroll_to"):  # GTK 4.12+
+            # No scroll info: the least scrolling that brings the row into view.
+            self.tree_view.scroll_to(pos, Gtk.ListScrollFlags.NONE, None)
+        else:
+            self.tree_view.activate_action("list.scroll-to-item", GLib.Variant("u", pos))
+        return False  # once only (a truthy return would re-run this idle forever)
+
+    def _fresh_node(self, node: FolderNode) -> FolderNode:
+        """*node*'s counterpart in the current tree_root. The store's items keep
+        the nodes they were built with, and grid-only live refreshes replace
+        tree_root without rebuilding the store."""
+        if self.tree_root is None:
+            return node
+        return find_node(self.tree_root, node.path) or node
 
     def _find_tree_row(self, path: str):
         """Return the Gtk.TreeListRow whose FolderItem matches *path*, or None."""
@@ -1019,8 +1117,12 @@ class MainWindow(Adw.ApplicationWindow):
         load the selected folder's photos, at startup."""
         if not self.config.scanned_folders:
             return False
-        self._reapply_sidebar_state()
-        if self.selected_folder is not None:
+        self._reapply_sidebar_state(reveal=True)
+        # Selecting the row normally shows its photos (_on_tree_selected); this
+        # covers a row that was already selected before the reveal.
+        if self.selected_folder is not None and self._shown_folder_path != (
+            os.path.normpath(self.selected_folder.path)
+        ):
             self._show_folder_photos(self.selected_folder)
         return False
 
@@ -1076,8 +1178,13 @@ class MainWindow(Adw.ApplicationWindow):
             print(f"[tadaima] re-focus via ancestor click: {node.path}", flush=True)
             self.set_focus_folder(node.path, preserve_expansion=True)
             return
+        node = self._fresh_node(node)
         self.selected_folder = node
-        self._show_folder_photos(node)
+        # The selected position also changes when rows above it are expanded,
+        # collapsed or restored; that is still the same folder, so don't rebuild
+        # the grid (and lose its scroll position and selected photo).
+        if os.path.normpath(node.path) != self._shown_folder_path:
+            self._show_folder_photos(node)
         if not self._restoring_state:
             self._persist_sidebar_state()
 
@@ -1159,7 +1266,7 @@ class MainWindow(Adw.ApplicationWindow):
             old_focus = self.focus_path
             if self.tree_root is not None:
                 for anc in ancestor_chain(self.tree_root, old_focus):
-                    if _within(norm, anc.path):
+                    if is_within(norm, anc.path):
                         keep_expanded.add(os.path.normpath(anc.path))
             keep_expanded.add(os.path.normpath(old_focus))
 
@@ -1190,6 +1297,7 @@ class MainWindow(Adw.ApplicationWindow):
 
     # ============================================== detail (thumbnails)
     def _show_folder_photos(self, node: FolderNode) -> None:
+        self._shown_folder_path = os.path.normpath(node.path)
         child = self.flow.get_first_child()
         while child is not None:
             nxt = child.get_next_sibling()
@@ -1729,7 +1837,7 @@ class MainWindow(Adw.ApplicationWindow):
         about = Adw.AboutWindow(
             transient_for=self,
             application_name=APP_NAME,
-            application_icon=ICON_NAME,
+            application_icon=self._icon_name,
             version=__version__,
             comments="A read-only photo browser for folders you choose.",
             developer_name="QDVC",
