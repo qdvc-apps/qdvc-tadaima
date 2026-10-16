@@ -19,6 +19,9 @@ thumbnails and its index exclusively to a disposable cache under
   the photo's real edges. Use `Ctrl +` / `Ctrl -` to make thumbnails larger or
   smaller and `Ctrl 0` to reset; the default shows roughly ten across on a
   typical 1920-wide window.
+- **Big folders open instantly.** The grid lays out every photo's slot right
+  away and the thumbnails fill in as they load in the background, so the window
+  stays responsive however many photos a folder holds.
 - **Full view with a filmstrip.** Single-click a thumbnail to select it;
   double-click (or select and press `Enter`) to open it full-window. A filmstrip
   of square thumbnails runs along the top; prev/next arrows sit on either side,

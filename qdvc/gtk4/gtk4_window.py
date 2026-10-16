@@ -12,7 +12,7 @@ import os
 import threading
 import time
 
-from gi.repository import Adw, Gdk, GdkPixbuf, Gio, GLib, GObject, Gtk, Pango
+from gi.repository import Adw, Gdk, Gio, GLib, GObject, Gtk, Pango
 
 from .. import APP_NAME, ICON_NAME, __version__
 from ..cache import (
@@ -36,9 +36,10 @@ from ..tree import (
     is_within,
     reveal_chain,
 )
-from ..ui_prefs import density_spec, format_count
+from ..ui_prefs import density_spec, fit_within, format_count
 from .gtk4_actions import install_actions, set_enabled
 from .gtk4_items import FolderItem
+from .gtk4_thumbgrid import ThumbGrid
 
 # Filmstrip thumbnail size — matches the 64px square derivative it displays.
 FILMSTRIP_H = 64
@@ -691,6 +692,10 @@ class MainWindow(Adw.ApplicationWindow):
         self.flow.set_margin_end(SLOT_SPACING)
         self.flow.connect("child-activated", self._on_thumb_activated)
         self.flow.connect("selected-children-changed", self._on_thumb_selected)
+        # Fills the flow box a few slots per idle and decodes thumbnails on
+        # background threads, so big folders open without freezing the UI.
+        self._thumb_grid = ThumbGrid(self.flow, self._make_thumb, self._set_thumb_texture)
+        self._pointer_cursor = Gdk.Cursor.new_from_name("pointer")
 
         # Enter opens the selected thumbnail in the viewer.
         fkey = Gtk.EventControllerKey()
@@ -887,6 +892,12 @@ class MainWindow(Adw.ApplicationWindow):
             {shadow_css}
             border-radius: 3px;
             background: transparent;
+        }}
+        /* A slot whose thumbnail is still loading: a faint tile the size of
+           the photo-to-be, without the drop shadow. */
+        .tadaima-thumb.tadaima-thumb-loading {{
+            background: alpha(currentColor, 0.08);
+            box-shadow: none;
         }}
         flowboxchild.tadaima-cell {{
             padding: 0;
@@ -1297,20 +1308,15 @@ class MainWindow(Adw.ApplicationWindow):
 
     # ============================================== detail (thumbnails)
     def _show_folder_photos(self, node: FolderNode) -> None:
+        """Show *node*'s photos from scratch: placeholders appear straight away
+        and fill in as their thumbnails load (see gtk4_thumbgrid)."""
         self._shown_folder_path = os.path.normpath(node.path)
-        child = self.flow.get_first_child()
-        while child is not None:
-            nxt = child.get_next_sibling()
-            self.flow.remove(child)
-            child = nxt
-
         images = node.own_images
+        self._thumb_grid.show(images, self._thumb_zoom)
         if not images:
             self.detail_stack.set_visible_child_name("empty")
             return
         self.detail_stack.set_visible_child_name("grid")
-        for rec in images:
-            self.flow.append(self._make_thumb(rec))
         # Reset the scroll position to the top; otherwise the previous folder's
         # scroll offset persists and looks like a big empty gap at the top.
         def _reset_scroll():
@@ -1321,66 +1327,59 @@ class MainWindow(Adw.ApplicationWindow):
 
         GLib.idle_add(_reset_scroll)
 
-    def _make_thumb(self, rec) -> Gtk.Widget:
+    def _refresh_folder_photos(self, node: FolderNode) -> None:
+        """Bring the grid up to date with *node* (during a background scan).
+        For the folder already shown, only new, changed or removed photos are
+        touched, so the selection and scroll position survive."""
+        if os.path.normpath(node.path) != self._shown_folder_path:
+            self._show_folder_photos(node)
+            return
+        images = node.own_images
+        self._thumb_grid.update(images)
+        self.detail_stack.set_visible_child_name("grid" if images else "empty")
+
+    def _make_thumb(self, rec, slot_w: int) -> Gtk.Widget:
+        """A grid slot for *rec* with an empty, correctly sized placeholder;
+        ThumbGrid decodes the thumbnail off the main thread and hands it to
+        _set_thumb_texture."""
         fbchild = Gtk.FlowBoxChild()
         fbchild._image_path = rec.path
         fbchild._rec = rec
         fbchild.add_css_class("tadaima-cell")
 
-        slot_w = self._thumb_zoom
         # The slot is a square of side slot_w. Both thumbnail dimensions are
         # capped at slot_w, so the image always fits with room to spare and is
-        # centred within the square — horizontally and vertically.
-        max_h = slot_w
-
-        # Only fully-derived images reach the grid (see _displayable_records),
-        # so the cached thumbnail derivative is always present — no fallback.
-        disp_w, disp_h = slot_w, slot_w
-        paintable = None
-        src = rec.thumb_path
-        if src and os.path.exists(src):
-            try:
-                pb = GdkPixbuf.Pixbuf.new_from_file(src)
-                w, h = pb.get_width(), pb.get_height()
-                if w > 0 and h > 0:
-                    scale = min(slot_w / w, max_h / h, 1.0)
-                    disp_w = max(1, int(round(w * scale)))
-                    disp_h = max(1, int(round(h * scale)))
-                    pb = pb.scale_simple(
-                        disp_w, disp_h, GdkPixbuf.InterpType.BILINEAR
-                    )
-                    paintable = Gdk.Texture.new_for_pixbuf(pb)
-            except Exception:
-                paintable = None
+        # centred within the square — horizontally and vertically. The index
+        # records each thumbnail's size, so the placeholder is laid out at the
+        # picture's final size and nothing moves when it arrives.
+        if rec.thumb_w > 0 and rec.thumb_h > 0:
+            disp_w, disp_h = fit_within(rec.thumb_w, rec.thumb_h, slot_w)
+            fbchild._disp_size = (disp_w, disp_h)
+        else:
+            disp_w, disp_h = slot_w, slot_w
+            fbchild._disp_size = None  # sized when the thumbnail arrives
 
         if self._plain_thumbs:
-            # Isolation mode: a plain Gtk.Image from the pixbuf. Gtk.Image has a
-            # fixed size and no paintable/scaling machinery, so if the repaint
-            # loop vanishes in this mode, Gtk.Picture is implicated.
+            # Isolation mode: a plain Gtk.Image. Gtk.Image has a fixed size and
+            # no paintable/scaling machinery, so if the repaint loop vanishes
+            # in this mode, Gtk.Picture is implicated.
             pic = Gtk.Image()
             pic.set_pixel_size(max(disp_w, disp_h))
-            if src and os.path.exists(src):
-                pic.set_from_file(src)
-            pic.set_halign(Gtk.Align.CENTER)
-            pic.set_valign(Gtk.Align.CENTER)
-            pic.add_css_class("tadaima-thumb")
-            pic.set_tooltip_text(rec.name)
-            pic.set_cursor(Gdk.Cursor.new_from_name("pointer"))
         else:
             pic = Gtk.Picture()
             pic.set_can_shrink(False)
             pic.set_content_fit(Gtk.ContentFit.FILL)
             pic.set_hexpand(False)
             pic.set_vexpand(False)
-            # Centre the thumbnail within the square slot, both axes.
-            pic.set_halign(Gtk.Align.CENTER)
-            pic.set_valign(Gtk.Align.CENTER)
-            pic.add_css_class("tadaima-thumb")
-            if paintable is not None:
-                pic.set_paintable(paintable)
             pic.set_size_request(disp_w, disp_h)
-            pic.set_tooltip_text(rec.name)
-            pic.set_cursor(Gdk.Cursor.new_from_name("pointer"))
+        # Centre the thumbnail within the square slot, both axes.
+        pic.set_halign(Gtk.Align.CENTER)
+        pic.set_valign(Gtk.Align.CENTER)
+        pic.add_css_class("tadaima-thumb")
+        pic.add_css_class("tadaima-thumb-loading")
+        pic.set_tooltip_text(rec.name)
+        pic.set_cursor(self._pointer_cursor)
+        fbchild._pic = pic
 
         # Fixed slot_w × slot_w square: uniform across all slots (so columns and
         # rows are regular) and large enough to centre the thumbnail in both
@@ -1406,6 +1405,16 @@ class MainWindow(Adw.ApplicationWindow):
         fbchild.set_hexpand(False)
         fbchild.set_vexpand(False)
         return fbchild
+
+    def _set_thumb_texture(self, fbchild, texture, width: int, height: int) -> None:
+        pic = fbchild._pic
+        if isinstance(pic, Gtk.Picture):
+            pic.set_paintable(texture)
+            if fbchild._disp_size is None:
+                pic.set_size_request(width, height)
+        else:
+            pic.set_from_paintable(texture)
+        pic.remove_css_class("tadaima-thumb-loading")
 
     def _metadata_line(self, rec) -> str:
         """One-line summary: name · date taken · dimensions · size."""
@@ -1606,12 +1615,9 @@ class MainWindow(Adw.ApplicationWindow):
             child = nxt
         self._film_widgets = []
         if self.selected_image_path is not None:
-            child = self.flow.get_first_child()
-            while child is not None:
-                if getattr(child, "_image_path", None) == self.selected_image_path:
-                    self.flow.select_child(child)
-                    break
-                child = child.get_next_sibling()
+            # Selects it now, or as soon as its slot exists if the folder is
+            # still filling in.
+            self._thumb_grid.select_path(self.selected_image_path)
         self._refresh_actions()
 
     def on_add_folder(self) -> None:
@@ -1950,7 +1956,7 @@ class MainWindow(Adw.ApplicationWindow):
             node = find_node(self.tree_root, prev)
             if node:
                 self.selected_folder = node
-                self._show_folder_photos(node)
+                self._refresh_folder_photos(node)
         return False
 
     def _scan_finished(self) -> bool:
@@ -1997,6 +2003,7 @@ class MainWindow(Adw.ApplicationWindow):
             self.config.set("window", {"width": w, "height": h})
         self._persist_sidebar_state()
         self._closing = True
+        self._thumb_grid.cancel()
         # Explicitly quit so the process exits even if a stray GSource or the
         # daemon scan thread is still around; returning False also lets the
         # window destroy normally.

@@ -49,6 +49,7 @@ qdvc-tadaima/
             gtk4_app.py        Adw.Application; prgname, icon, accels, app.quit.
             gtk4_window.py     Main window: split view, sidebar, gallery, full.
             gtk4_actions.py    win.* Gio.SimpleActions.
+            gtk4_thumbgrid.py  Progressive thumbnail grid + decoding threads.
             gtk4_preferences.py Adw.PreferencesWindow (live-apply density).
             gtk4_shortcuts.py  Shortcuts window from SHORTCUTS.
     data/
@@ -132,7 +133,8 @@ expands the selected folder and ← collapses it (`_on_sidebar_key`).
 `GLib.idle_add` right after `sync_index` (structure may have changed, so the
 sidebar tree is rebuilt once and subfolders appear). Every subsequent mid-scan
 refresh uses `_live_refresh(rebuild_tree=False)`, which refreshes only the
-open folder's thumbnail grid and does **not** rebuild the tree store; the
+open folder's thumbnail grid — incrementally, via `_refresh_folder_photos`, so
+only new or changed photos get slots — and does **not** rebuild the tree store; the
 end-of-scan refresh rebuilds it once more so folder counts are final. (Frequent
 mid-scan rebuilds made the tree flicker shut and reopen under the user — the
 "retreat" bug — and blocked digging into folders during a scan; every rebuild
@@ -275,12 +277,56 @@ A subtle but critical detail that caused repeated trouble: a `Gtk.Picture` fed a
 *file* reports the full image's pixel dimensions as its natural size, and GTK
 lays FlowBox out on that — producing one giant column, per-folder-varying slot
 widths, and a runaway measure/allocate cycle that pegs a CPU core. The fix is to
-load the thumbnail derivative into a `GdkPixbuf`, scale it **once** to fit the
-slot (`scale_simple`, width and height both ≤ `slot_w`, never upscaled beyond
-1.0), wrap it in a `Gdk.Texture`, and hand that to the Picture. The Picture's
-natural size is then exactly the scaled size — bounded, stable, no layout thrash.
+decode the thumbnail derivative into a `GdkPixbuf` already scaled to fit the
+slot (`ui_prefs.fit_within`: width and height both ≤ `slot_w`, never upscaled),
+wrap it in a `Gdk.Texture`, and hand that to the Picture, whose size request is
+that same fitted size. Its size is then bounded and stable — no layout thrash.
 Each slot is a `slot_w`-wide box of that natural height with the thumbnail
 centred; uniform width means FlowBox packs a predictable column count.
+
+## Thumbnail grid — progressive loading
+
+Opening a folder used to build the whole grid synchronously: every thumbnail
+was decoded and scaled on the main thread before the next frame, so a folder of
+a few hundred photos froze the window for seconds (roughly 1.6 ms of decoding
+per photo, plus widget creation). And during a background scan
+`_live_refresh` rebuilt the open folder from scratch every 0.6 s. Now
+`gtk4_thumbgrid.ThumbGrid` owns the FlowBox's contents:
+
+- **Slots in slices.** `show()` clears the grid and schedules `_fill` as an
+  idle callback, which inserts slots until `FRAME_BUDGET_S` (8 ms) is used up,
+  then returns True to run again after input and redraws. Idle priority is
+  below GTK's redraw priority, so the window keeps painting and responding.
+- **Placeholders at final size.** `_make_thumb` builds an empty Picture sized
+  from `rec.thumb_w/thumb_h` (recorded in the index when the thumbnail is
+  made), styled `tadaima-thumb-loading` (a faint tile, no shadow). Nothing
+  moves when the picture arrives. Records without stored dimensions get a
+  square placeholder, resized when decoded.
+- **Decoding off the main thread.** `ThumbDecoder` runs `DECODE_THREADS` (2)
+  daemon threads that decode with `GdkPixbuf.Pixbuf.new_from_file_at_scale`
+  straight to display size (gdk-pixbuf's JPEG/PNG loaders are thread-safe and
+  PyGObject drops the GIL while they run). Finished pixbufs queue up and are
+  turned into textures by one idle `_drain` per batch, again within the frame
+  budget. `_drain` resets its "scheduled" flag under the same lock the workers
+  use, so a result finishing at that instant cannot be stranded — and it
+  returns False once empty (an idle that keeps returning True spins a core;
+  see *Viewer CPU*).
+- **Cancellation.** `show()` and window close call `cancel()`: the fill idle is
+  removed and `ThumbDecoder.clear()` drops queued jobs and undelivered results
+  and bumps a generation counter, so decodes already in flight for the old
+  folder are discarded when they finish.
+- **Incremental updates.** `update()` (from `_refresh_folder_photos`, i.e. a
+  scan's live refresh of the folder on screen) keys slots by
+  `ui_prefs.thumb_key` (path, mtime, size): slots for photos still present are
+  kept — with their picture, selection and scroll position — removed photos'
+  slots are dropped, and the fill walks the new list inserting slots for new or
+  changed photos at their index. An unchanged list is a no-op. A slot whose
+  decode failed (e.g. its thumbnail was being regenerated) is rebuilt by the
+  next update.
+- **Selection after the viewer.** `on_back` calls `select_path`, which selects
+  the slot now or as soon as the fill creates it.
+
+Zooming (Ctrl +/-/0) changes every slot's size, so it reloads with `show()`.
 
 ## Info sidebar
 
@@ -459,6 +505,9 @@ force regeneration.
 - **Sidebar state** (`tests/test_sidebar_state.py`): runs the real
   `MainWindow` expansion/restore methods against stand-in tree rows that
   behave like GTK's (including torn-down rows).
+- **Thumbnail grid** (`tests/test_thumb_grid.py`): `ThumbGrid` against a
+  list-backed stand-in FlowBox (slices, incremental updates, stale results,
+  pending selection) and the real `ThumbDecoder` threads with a stub decoder.
 - **Import smoke test** (`tests/test_import_smoke.py`): a permissive fake `gi`
   lets every `qdvc.gtk4.*` module import, exercising class bodies and top-level
   code.

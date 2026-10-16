@@ -67,3 +67,18 @@ def density_spec(name: str) -> dict[str, float]:
 def format_count(n: int) -> str:
     """Right-aligned image count string, thousands-separated."""
     return f"{n:,}"
+
+
+def fit_within(width: int, height: int, box: int) -> tuple[int, int]:
+    """Size of a *width* × *height* image shrunk (never enlarged) to fit a
+    *box* × *box* square, keeping its proportions. At least 1 × 1."""
+    if width <= 0 or height <= 0:
+        return box, box
+    scale = min(box / width, box / height, 1.0)
+    return max(1, int(round(width * scale))), max(1, int(round(height * scale)))
+
+
+def thumb_key(rec) -> tuple:
+    """Identifies one photo's slot in the thumbnail grid: the same file,
+    unchanged. A changed file gets a new key, so its slot is rebuilt."""
+    return (rec.path, rec.mtime, rec.size)
