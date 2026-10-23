@@ -36,21 +36,20 @@ from ..tree import (
     is_within,
     reveal_chain,
 )
-from ..ui_prefs import density_spec, fit_within, format_count
+from ..stream import build_stream
+from ..ui_prefs import density_spec, format_count
 from .gtk4_actions import install_actions, set_enabled
 from .gtk4_items import FolderItem
-from .gtk4_thumbgrid import ThumbGrid
+from .gtk4_stream import PhotoStream
 
 # Filmstrip thumbnail size — matches the 64px square derivative it displays.
 FILMSTRIP_H = 64
 
-# Thumbnail grid: each image occupies a SLOT. As many slots as fit are packed
-# per row; rows reflow; each row's height is the tallest slot in it; the
-# thumbnail is centred within its slot. SLOT_WIDTH caps BOTH width and height of
-# a thumbnail, so a very tall image scales down to fit (becoming narrow) rather
-# than producing a super-tall row. Configurable; 150px for now.
+# Photo stream: each image occupies a square SLOT, as many per row as fit, with
+# the thumbnail centred in it. SLOT_WIDTH caps BOTH width and height of a
+# thumbnail, so a very tall image scales down to fit (becoming narrow) rather
+# than producing a super-tall row. The default; Ctrl +/-/0 zoom changes it.
 SLOT_WIDTH = 150
-SLOT_SPACING = 12
 
 
 # How often the scan worker refreshes the visible tree/grid while running.
@@ -83,8 +82,18 @@ class MainWindow(Adw.ApplicationWindow):
         # row torn down then reports notify::expanded = False, which must not be
         # mistaken for the user collapsing it (see _on_row_expanded_changed).
         self._rebuilding_sidebar = False
-        # Folder whose photos the grid currently shows (normalised path).
-        self._shown_folder_path: str | None = None
+        # Scrollspy: the folder the sidebar highlights for (the stream's
+        # current folder, or the folder last clicked while the stream is
+        # still showing it), and a guard so highlighting a row isn't taken
+        # for the user picking it.
+        self._spy_target: str | None = None
+        self._spy_syncing = False
+        self._clicked_folder: str | None = None
+        self._persist_source = 0
+        # GTK lays the window out (and the stream reports its top folder)
+        # before idle callbacks run; until the previous session's folder has
+        # been restored, that report must not replace it.
+        self._session_restored = False
         # A pending "scroll the sidebar to this folder after the next paint".
         self._sidebar_scroll_path: str | None = None
         self._sidebar_scroll_handler = 0
@@ -505,6 +514,16 @@ class MainWindow(Adw.ApplicationWindow):
         gesture.connect("pressed", self._on_row_right_click, list_item)
         expander.add_controller(gesture)
 
+        # Left click: show the folder in the stream, even when its row is
+        # already selected (the scrollspy selects rows too, so "click the
+        # highlighted folder to go back to its top" must still work). Not
+        # claimed, so the ListView still selects the row as usual.
+        left = Gtk.GestureClick()
+        left.set_button(1)
+        left.set_propagation_phase(Gtk.PropagationPhase.CAPTURE)
+        left.connect("released", self._on_row_left_click, list_item)
+        expander.add_controller(left)
+
     def _tree_bind(self, factory, list_item) -> None:
         row = list_item.get_item()              # Gtk.TreeListRow
         item: FolderItem = row.get_item()        # FolderItem
@@ -582,6 +601,8 @@ class MainWindow(Adw.ApplicationWindow):
             forget_subtree(self._expanded, path)
         if not self._restoring_state:
             self._persist_sidebar_state()
+            # The scrollspy's row may have just appeared or been hidden.
+            GLib.idle_add(self._rehighlight)
 
     def _persist_sidebar_state(self) -> None:
         self.config.expanded_folders = sorted(self._expanded)
@@ -629,20 +650,81 @@ class MainWindow(Adw.ApplicationWindow):
             self.info_group.add(row)
             self._info_rows.append(row)
 
+        # Camera details from the photo's EXIF: rows only for what it has.
+        self.camera_group = Adw.PreferencesGroup()
+        self.camera_group.set_title("Camera")
+        self.camera_group.set_margin_bottom(12)
+        self.camera_group.set_margin_start(12)
+        self.camera_group.set_margin_end(12)
+        self._camera_rows: list = []
+
+        groups = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
+        groups.append(self.info_group)
+        groups.append(self.camera_group)
+
         scroller = Gtk.ScrolledWindow()
         scroller.set_vexpand(True)
         scroller.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
-        scroller.set_child(self.info_group)
+        scroller.set_child(groups)
         panel.append(scroller)
         return panel
+
+    def _metadata_for(self, rec):
+        """read_metadata, remembered for the last photo (the caption and the
+        information sidebar both want it on every selection)."""
+        key = (rec.path, rec.mtime, rec.size)
+        cached = getattr(self, "_md_cache", None)
+        if cached is None or cached[0] != key:
+            cached = (key, read_metadata(rec.path))
+            self._md_cache = cached
+        return cached[1]
+
+    def _set_camera_rows(self, md) -> None:
+        for row in self._camera_rows:
+            self.camera_group.remove(row)
+        self._camera_rows = []
+        if md is None:
+            self.camera_group.set_description(None)
+            return
+        for label, value in md.camera:
+            row = Adw.ActionRow()
+            row.set_title(label)
+            row.set_subtitle(value)
+            row.set_subtitle_selectable(True)
+            if label == "Location" and md.location is not None:
+                lat, lon = md.location
+                show = Gtk.Button()
+                show.set_icon_name("mark-location-symbolic")
+                show.set_tooltip_text("Show on OpenStreetMap")
+                show.set_valign(Gtk.Align.CENTER)
+                show.add_css_class("flat")
+                show.connect("clicked", lambda _b, a=lat, o=lon: self._open_map(a, o))
+                row.add_suffix(show)
+            self.camera_group.add(row)
+            self._camera_rows.append(row)
+        self.camera_group.set_description(
+            None if md.camera else "No camera details in this photo."
+        )
+
+    def _open_map(self, lat: float, lon: float) -> None:
+        """Open the photo's location in the browser (only when asked)."""
+        url = (f"https://www.openstreetmap.org/?mlat={lat:.6f}&mlon={lon:.6f}"
+               f"#map=16/{lat:.6f}/{lon:.6f}")
+        if hasattr(Gtk, "UriLauncher"):  # GTK 4.10+
+            Gtk.UriLauncher.new(url).launch(self, None, None, None)
+        else:
+            Gtk.show_uri(self, url, Gdk.CURRENT_TIME)
 
     def _update_info_panel(self) -> None:
         rec = getattr(self, "_selected_rec", None)
         if rec is None or not hasattr(self, "_info_rows"):
             for row in getattr(self, "_info_rows", []):
                 row.set_subtitle("—")
+            if hasattr(self, "camera_group"):
+                self._set_camera_rows(None)
             return
-        md = read_metadata(rec.path)
+        md = self._metadata_for(rec)
+        self._set_camera_rows(md)
         values = [
             rec.name,
             md.date_str,
@@ -663,60 +745,28 @@ class MainWindow(Adw.ApplicationWindow):
 
     # ------------------------------------------------------------- detail
     def _build_detail(self) -> Gtk.Widget:
-        self.detail_scroller = Gtk.ScrolledWindow()
-        self.detail_scroller.set_hexpand(True)
-        self.detail_scroller.set_vexpand(True)
-        self.detail_scroller.set_policy(
-            Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC
+        # Every photo under the focused folder in one scrolling grid, with a
+        # heading per folder (see gtk4_stream). Virtualised: only what is near
+        # the visible area has widgets, so any number of photos is cheap.
+        self.photo_stream = PhotoStream(
+            on_selection=self._on_photo_selected,
+            on_activate=self._on_photo_activated,
+            on_section=self._on_stream_section,
+            plain_thumbs=self._plain_thumbs,
+            slot=self._thumb_zoom,
         )
-
-        self.flow = Gtk.FlowBox()
-        self.flow.set_valign(Gtk.Align.START)
-        self.flow.set_halign(Gtk.Align.FILL)
-        self.flow.set_hexpand(True)
-        self.flow.set_max_children_per_line(10000)
-        self.flow.set_min_children_per_line(1)
-        self.flow.set_selection_mode(Gtk.SelectionMode.SINGLE)
-        # Single click selects only; double-click (or Enter) opens the viewer.
-        self.flow.set_activate_on_single_click(False)
-        # Slot model: every child is a fixed SLOT_WIDTH-wide slot of natural
-        # height, so FlowBox packs floor(width / (SLOT_WIDTH + spacing)) slots
-        # per row and sets each row's height to its tallest slot. NOT
-        # homogeneous — homogeneous would force a uniform height across all rows.
-        self.flow.set_homogeneous(False)
-        self.flow.set_row_spacing(SLOT_SPACING)
-        self.flow.set_column_spacing(SLOT_SPACING)
-        self.flow.set_margin_top(SLOT_SPACING)
-        self.flow.set_margin_bottom(SLOT_SPACING)
-        self.flow.set_margin_start(SLOT_SPACING)
-        self.flow.set_margin_end(SLOT_SPACING)
-        self.flow.connect("child-activated", self._on_thumb_activated)
-        self.flow.connect("selected-children-changed", self._on_thumb_selected)
-        # Fills the flow box a few slots per idle and decodes thumbnails on
-        # background threads, so big folders open without freezing the UI.
-        self._thumb_grid = ThumbGrid(self.flow, self._make_thumb, self._set_thumb_texture)
-        self._pointer_cursor = Gdk.Cursor.new_from_name("pointer")
-
-        # Enter opens the selected thumbnail in the viewer.
-        fkey = Gtk.EventControllerKey()
-        fkey.connect("key-pressed", self._on_grid_key)
-        self.flow.add_controller(fkey)
 
         self.detail_placeholder = Adw.StatusPage()
         self.detail_placeholder.set_icon_name("emblem-photos-symbolic")
         self.detail_placeholder.set_title("No photos to show")
         self.detail_placeholder.set_description(
-            "Select a folder on the left to see the photos inside it."
+            "Photos in your scanned folders appear here as soon as they are indexed."
         )
 
         self.detail_stack = Gtk.Stack()
         self.detail_stack.set_hexpand(True)
         self.detail_stack.set_vexpand(True)
-        self.detail_scroller.set_child(self.flow)
-        # Don't let the FlowBox's small natural width shrink the pane; let it
-        # fill whatever width the paned gives it (so columns aren't capped).
-        self.detail_scroller.set_propagate_natural_width(False)
-        self.detail_stack.add_named(self.detail_scroller, "grid")
+        self.detail_stack.add_named(self.photo_stream.widget, "grid")
         self.detail_stack.add_named(self.detail_placeholder, "empty")
         self.detail_stack.set_visible_child_name("empty")
         return self.detail_stack
@@ -734,7 +784,7 @@ class MainWindow(Adw.ApplicationWindow):
         self.full_back_btn.set_tooltip_text("Back to Library")
         self.full_back_btn.set_action_name("win.back")
         # Keep it focusable for keyboard users, but don't let it grab focus the
-        # moment the viewer opens (see _on_thumb_activated, which moves focus to
+        # moment the viewer opens (see _on_photo_activated, which moves focus to
         # the picture instead).
         self.full_back_btn.set_focus_on_click(False)
         header.pack_start(self.full_back_btn)
@@ -883,8 +933,8 @@ class MainWindow(Adw.ApplicationWindow):
         .tadaima-sidebar .tadaima-row-label {{
             font-size: {spec['font_scale']:.2f}em;
         }}
-        /* Shadow + selection border live on the picture itself, which is now
-           sized to hug the real image (see _make_thumb), so they sit on the
+        /* Shadow + selection border live on the picture itself, which is
+           sized to hug the real image (see gtk4_stream), so they sit on the
            photo's true edges rather than a letterboxed cell. The drop shadow
            can be disabled with QDVC_NO_SHADOW=1 to test whether shadow
            rasterisation is driving continuous repaints. */
@@ -899,22 +949,15 @@ class MainWindow(Adw.ApplicationWindow):
             background: alpha(currentColor, 0.08);
             box-shadow: none;
         }}
-        flowboxchild.tadaima-cell {{
-            padding: 0;
-            background: transparent;
-            box-shadow: none;
-        }}
-        flowboxchild.tadaima-cell:selected {{
-            background: transparent;
-            box-shadow: none;
-            outline: none;
-        }}
-        flowboxchild.tadaima-cell:selected picture.tadaima-thumb {{
+        .tadaima-thumb.tadaima-thumb-selected {{
             /* A box-shadow ring renders reliably on a Picture where CSS
                `outline` often does not. Keeps the drop shadow and adds an
                accent-coloured selection ring. */
             box-shadow: 0 0 0 3px @accent_color, 0 2px 8px rgba(0,0,0,0.5);
         }}
+        .tadaima-stream:focus-visible {{ outline: none; }}
+        .tadaima-stream-title {{ font-weight: 700; font-size: 1.15em; }}
+        .tadaima-stream-context {{ font-size: 0.9em; }}
         .tadaima-count {{ opacity: 0.55; }}
         .tadaima-ancestor {{ font-style: italic; opacity: 0.7; }}
         .tadaima-focused {{ font-weight: bold; }}
@@ -977,6 +1020,8 @@ class MainWindow(Adw.ApplicationWindow):
         roots = self.config.scanned_folders
         self.tree_root = build_tree(self._displayable_records(), roots)
         self._populate_sidebar()
+        if hasattr(self, "photo_stream"):
+            self._rebuild_stream(keep_position=True)
 
     def _populate_sidebar(self) -> None:
         if not hasattr(self, "_root_store"):
@@ -1016,19 +1061,20 @@ class MainWindow(Adw.ApplicationWindow):
         GLib.idle_add(self._reapply_sidebar_state)
 
     def _reapply_sidebar_state(self, reveal: bool = False) -> bool:
-        """Expand remembered folders and re-select the remembered folder after
+        """Expand remembered folders and re-highlight the current folder after
         the tree store has been (re)built, scrolling it into view.
 
-        With *reveal* (at startup) the folders leading to the selected folder
-        are expanded too, so it is shown even if its parents were not
-        remembered as expanded."""
+        With *reveal* (at startup) the folders leading to the remembered
+        folder are expanded too, so its own row is shown even if its parents
+        were not remembered as expanded. Otherwise the highlight falls back to
+        its nearest visible parent, like the scrollspy."""
         if self._closing:
             return False
         self._restoring_state = True
         try:
             if self._expanded:
                 self._restore_expanded(set(self._expanded))
-            target = (
+            target = self._spy_target or (
                 self.selected_folder.path
                 if self.selected_folder
                 else self._pending_selected
@@ -1036,13 +1082,41 @@ class MainWindow(Adw.ApplicationWindow):
             if target:
                 if reveal:
                     self._reveal_path(target)
-                row, pos = self._find_tree_row(target)
-                if row is not None:
-                    self._selection.set_selected(pos)
-                    self.selected_folder = self._fresh_node(row.get_item().node)
-                    self._scroll_sidebar_to(target)
+                if self.tree_root is not None:
+                    node = find_node(self.tree_root, target)
+                    if node is not None:
+                        self.selected_folder = node
+                self._highlight_in_sidebar(target)
         finally:
             self._restoring_state = False
+        return False
+
+    def _highlight_in_sidebar(self, path: str) -> None:
+        """Select *path*'s row — or, if it is hidden inside a collapsed folder,
+        its nearest visible parent's — without navigating the stream, and
+        scroll the sidebar to it. Never expands or collapses anything."""
+        self._spy_target = os.path.normpath(path)
+        focus = os.path.normpath(self.focus_path)
+        p = self._spy_target
+        while True:
+            row, pos = self._find_tree_row(p)
+            if row is not None and row.get_item().style != "ancestor":
+                break
+            parent = os.path.dirname(p)
+            if p == focus or parent == p:
+                return
+            p = parent
+        if self._selection.get_selected() != pos:
+            self._spy_syncing = True
+            try:
+                self._selection.set_selected(pos)
+            finally:
+                self._spy_syncing = False
+        self._scroll_sidebar_to(p)
+
+    def _rehighlight(self) -> bool:
+        if self._spy_target and not self._closing:
+            self._highlight_in_sidebar(self._spy_target)
         return False
 
     def _reveal_path(self, path: str) -> None:
@@ -1124,17 +1198,21 @@ class MainWindow(Adw.ApplicationWindow):
         return expanded
 
     def _restore_session_state(self) -> bool:
-        """Re-apply the previous session's expanded folders and selection, and
-        load the selected folder's photos, at startup."""
+        """At startup: re-apply the previous session's expanded folders, open
+        the way to the folder you were last looking at, highlight it, and
+        scroll the stream to it."""
+        self._session_restored = True
         if not self.config.scanned_folders:
             return False
         self._reapply_sidebar_state(reveal=True)
-        # Selecting the row normally shows its photos (_on_tree_selected); this
-        # covers a row that was already selected before the reveal.
-        if self.selected_folder is not None and self._shown_folder_path != (
-            os.path.normpath(self.selected_folder.path)
-        ):
-            self._show_folder_photos(self.selected_folder)
+        if self.selected_folder is not None:
+            self._clicked_folder = os.path.normpath(self.selected_folder.path)
+            if not self.photo_stream.scroll_to_folder(self.selected_folder.path):
+                self._clicked_folder = None  # no photos there (any more)
+        else:
+            current = self.photo_stream.current_section
+            if current is not None:
+                self._on_stream_section(current)
         return False
 
     def _restore_expanded(self, paths: set[str]) -> bool:
@@ -1177,6 +1255,8 @@ class MainWindow(Adw.ApplicationWindow):
 
     # ============================================= sidebar interactions
     def _on_tree_selected(self, selection, _param) -> None:
+        if self._spy_syncing or self._restoring_state:
+            return  # the scrollspy or a restore moved the highlight
         row = selection.get_selected_item()   # Gtk.TreeListRow or None
         if row is None:
             return
@@ -1189,15 +1269,64 @@ class MainWindow(Adw.ApplicationWindow):
             print(f"[tadaima] re-focus via ancestor click: {node.path}", flush=True)
             self.set_focus_folder(node.path, preserve_expansion=True)
             return
+        self._go_to_folder(node)
+
+    def _on_row_left_click(self, gesture, n_press, x, y, list_item) -> None:
+        row = list_item.get_item()
+        item = row.get_item() if row is not None else None
+        if item is None or item.style == "ancestor":
+            return  # ancestors re-focus through the selection change
+        # Clicking the expander arrow only opens or closes the folder.
+        widget = gesture.get_widget().pick(x, y, Gtk.PickFlags.DEFAULT)
+        while widget is not None and widget is not gesture.get_widget():
+            if widget.get_css_name() == "expander":
+                return
+            widget = widget.get_parent()
+        self._go_to_folder(item.node)
+
+    def _go_to_folder(self, node: FolderNode) -> None:
+        """Show *node* in the stream: its photos' heading (or its first
+        subfolder's) scrolled to the top, and its row highlighted."""
         node = self._fresh_node(node)
         self.selected_folder = node
-        # The selected position also changes when rows above it are expanded,
-        # collapsed or restored; that is still the same folder, so don't rebuild
-        # the grid (and lose its scroll position and selected photo).
-        if os.path.normpath(node.path) != self._shown_folder_path:
-            self._show_folder_photos(node)
-        if not self._restoring_state:
-            self._persist_sidebar_state()
+        self._clicked_folder = os.path.normpath(node.path)
+        self._spy_target = self._clicked_folder
+        if not self.photo_stream.scroll_to_folder(node.path):
+            self._set_status(f"No photos in {node.name}", transient=True)
+        self._persist_sidebar_state()
+
+    def _on_stream_section(self, section) -> None:
+        """Scrollspy: the folder at the top of the stream changed."""
+        if section is None or not self._session_restored:
+            return
+        if self.photo_stream.holding and self._clicked_folder:
+            # Just navigated there from the sidebar: keep the clicked folder
+            # highlighted (it may be a parent with no photos of its own, or a
+            # short section at the end the view can't bring to the top).
+            target = self._clicked_folder
+        else:
+            self._clicked_folder = None
+            target = section.path
+        if self.tree_root is not None:
+            node = find_node(self.tree_root, target)
+            if node is not None:
+                self.selected_folder = node
+        self._highlight_in_sidebar(target)
+        self._schedule_persist()
+
+    def _schedule_persist(self) -> None:
+        """Save the current folder a moment after scrolling settles, rather
+        than once per folder scrolled past."""
+        if self._persist_source:
+            GLib.source_remove(self._persist_source)
+
+        def save():
+            self._persist_source = 0
+            if not self._closing:
+                self._persist_sidebar_state()
+            return False
+
+        self._persist_source = GLib.timeout_add(1500, save)
 
     def _on_row_right_click(self, gesture, n_press, x, y, list_item) -> None:
         row = list_item.get_item()
@@ -1283,6 +1412,13 @@ class MainWindow(Adw.ApplicationWindow):
 
         self.focus_path = norm
         self._populate_sidebar()
+        # The stream shows the focused folder's photos, from the top — or,
+        # when stepping up to an ancestor, still at the folder being viewed.
+        current = self.selected_folder.path if self.selected_folder else None
+        self._rebuild_stream(keep_position=False)
+        if preserve_expansion and current and is_within(norm, current):
+            self._clicked_folder = os.path.normpath(current)
+            self.photo_stream.scroll_to_folder(current)
 
         if preserve_expansion and keep_expanded:
             # Also expand the new focus so the chain is reachable.
@@ -1306,135 +1442,33 @@ class MainWindow(Adw.ApplicationWindow):
             print(f"[tadaima] expanded focused row: {self.focus_path}", flush=True)
         return False
 
-    # ============================================== detail (thumbnails)
-    def _show_folder_photos(self, node: FolderNode) -> None:
-        """Show *node*'s photos from scratch: placeholders appear straight away
-        and fill in as their thumbnails load (see gtk4_thumbgrid)."""
-        self._shown_folder_path = os.path.normpath(node.path)
-        images = node.own_images
-        self._thumb_grid.show(images, self._thumb_zoom)
-        if not images:
-            self.detail_stack.set_visible_child_name("empty")
+    # ============================================== detail (photo stream)
+    def _rebuild_stream(self, keep_position: bool) -> None:
+        """Rebuild the stream from the current tree and focus. With
+        *keep_position* (scan refreshes) the view stays where it is."""
+        if self.tree_root is None:
             return
-        self.detail_stack.set_visible_child_name("grid")
-        # Reset the scroll position to the top; otherwise the previous folder's
-        # scroll offset persists and looks like a big empty gap at the top.
-        def _reset_scroll():
-            vadj = self.detail_scroller.get_vadjustment()
-            if vadj is not None:
-                vadj.set_value(vadj.get_lower())
-            return False
-
-        GLib.idle_add(_reset_scroll)
-
-    def _refresh_folder_photos(self, node: FolderNode) -> None:
-        """Bring the grid up to date with *node* (during a background scan).
-        For the folder already shown, only new, changed or removed photos are
-        touched, so the selection and scroll position survive."""
-        if os.path.normpath(node.path) != self._shown_folder_path:
-            self._show_folder_photos(node)
-            return
-        images = node.own_images
-        self._thumb_grid.update(images)
-        self.detail_stack.set_visible_child_name("grid" if images else "empty")
-
-    def _make_thumb(self, rec, slot_w: int) -> Gtk.Widget:
-        """A grid slot for *rec* with an empty, correctly sized placeholder;
-        ThumbGrid decodes the thumbnail off the main thread and hands it to
-        _set_thumb_texture."""
-        fbchild = Gtk.FlowBoxChild()
-        fbchild._image_path = rec.path
-        fbchild._rec = rec
-        fbchild.add_css_class("tadaima-cell")
-
-        # The slot is a square of side slot_w. Both thumbnail dimensions are
-        # capped at slot_w, so the image always fits with room to spare and is
-        # centred within the square — horizontally and vertically. The index
-        # records each thumbnail's size, so the placeholder is laid out at the
-        # picture's final size and nothing moves when it arrives.
-        if rec.thumb_w > 0 and rec.thumb_h > 0:
-            disp_w, disp_h = fit_within(rec.thumb_w, rec.thumb_h, slot_w)
-            fbchild._disp_size = (disp_w, disp_h)
-        else:
-            disp_w, disp_h = slot_w, slot_w
-            fbchild._disp_size = None  # sized when the thumbnail arrives
-
-        if self._plain_thumbs:
-            # Isolation mode: a plain Gtk.Image. Gtk.Image has a fixed size and
-            # no paintable/scaling machinery, so if the repaint loop vanishes
-            # in this mode, Gtk.Picture is implicated.
-            pic = Gtk.Image()
-            pic.set_pixel_size(max(disp_w, disp_h))
-        else:
-            pic = Gtk.Picture()
-            pic.set_can_shrink(False)
-            pic.set_content_fit(Gtk.ContentFit.FILL)
-            pic.set_hexpand(False)
-            pic.set_vexpand(False)
-            pic.set_size_request(disp_w, disp_h)
-        # Centre the thumbnail within the square slot, both axes.
-        pic.set_halign(Gtk.Align.CENTER)
-        pic.set_valign(Gtk.Align.CENTER)
-        pic.add_css_class("tadaima-thumb")
-        pic.add_css_class("tadaima-thumb-loading")
-        pic.set_tooltip_text(rec.name)
-        pic.set_cursor(self._pointer_cursor)
-        fbchild._pic = pic
-
-        # Fixed slot_w × slot_w square: uniform across all slots (so columns and
-        # rows are regular) and large enough to centre the thumbnail in both
-        # directions. The picture is centred, not stretched.
-        slot = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
-        slot.set_size_request(slot_w, slot_w)
-        slot.set_halign(Gtk.Align.CENTER)
-        slot.set_valign(Gtk.Align.CENTER)
-        slot.set_hexpand(False)
-        slot.set_vexpand(False)
-        # A centring wrapper: fills the square and centres the picture within.
-        centre = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
-        centre.set_hexpand(True)
-        centre.set_vexpand(True)
-        centre.set_halign(Gtk.Align.CENTER)
-        centre.set_valign(Gtk.Align.CENTER)
-        centre.append(pic)
-        slot.append(centre)
-
-        fbchild.set_child(slot)
-        fbchild.set_halign(Gtk.Align.CENTER)
-        fbchild.set_valign(Gtk.Align.CENTER)
-        fbchild.set_hexpand(False)
-        fbchild.set_vexpand(False)
-        return fbchild
-
-    def _set_thumb_texture(self, fbchild, texture, width: int, height: int) -> None:
-        pic = fbchild._pic
-        if isinstance(pic, Gtk.Picture):
-            pic.set_paintable(texture)
-            if fbchild._disp_size is None:
-                pic.set_size_request(width, height)
-        else:
-            pic.set_from_paintable(texture)
-        pic.remove_css_class("tadaima-thumb-loading")
+        focus = find_node(self.tree_root, self.focus_path) or self.tree_root
+        stream = build_stream(focus)
+        self.photo_stream.set_stream(stream, keep_position=keep_position)
+        self.detail_stack.set_visible_child_name("grid" if len(stream) else "empty")
 
     def _metadata_line(self, rec) -> str:
         """One-line summary: name · date taken · dimensions · size."""
-        md = read_metadata(rec.path)
+        md = self._metadata_for(rec)
         return (
             f"{rec.name}    ·    {md.date_str}    ·    "
             f"{md.dimensions_str}    ·    {human_size(md.size_bytes)}"
         )
 
-    def _on_thumb_selected(self, flow) -> None:
-        sel = flow.get_selected_children()
-        if sel:
-            rec = getattr(sel[0], "_rec", None)
-            self.selected_image_path = getattr(sel[0], "_image_path", None)
-            self.gallery_caption.set_text(self._metadata_line(rec) if rec else "")
-            self._selected_rec = rec
+    def _on_photo_selected(self, rec) -> None:
+        if rec is not None:
+            self.selected_image_path = rec.path
+            self.gallery_caption.set_text(self._metadata_line(rec))
         else:
             self.selected_image_path = None
             self.gallery_caption.set_text("")
-            self._selected_rec = None
+        self._selected_rec = rec
         self._refresh_actions()
         if (
             getattr(self, "info_revealer", None) is not None
@@ -1442,23 +1476,15 @@ class MainWindow(Adw.ApplicationWindow):
         ):
             self._update_info_panel()
 
-    def _on_grid_key(self, controller, keyval, keycode, state) -> bool:
-        """Enter opens the currently-selected thumbnail in the viewer."""
-        if keyval in (Gdk.KEY_Return, Gdk.KEY_KP_Enter):
-            sel = self.flow.get_selected_children()
-            if sel:
-                self._on_thumb_activated(self.flow, sel[0])
-                return True
-        return False
-
-    def _on_thumb_activated(self, flow, child) -> None:
-        rec = getattr(child, "_rec", None)
-        if rec is None:
-            return
+    def _on_photo_activated(self, rec) -> None:
+        """Open *rec* in the viewer, which steps through its folder's photos."""
         self.selected_image_path = rec.path
-        self._full_images = (
-            list(self.selected_folder.own_images) if self.selected_folder else [rec]
+        folder = (
+            find_node(self.tree_root, os.path.dirname(rec.path))
+            if self.tree_root is not None
+            else None
         )
+        self._full_images = list(folder.own_images) if folder else [rec]
         self._full_index = next(
             (i for i, r in enumerate(self._full_images) if r.path == rec.path), 0
         )
@@ -1596,9 +1622,7 @@ class MainWindow(Adw.ApplicationWindow):
             return
         self._thumb_zoom = value
         self.config.thumb_zoom = value
-        # Re-render the currently shown folder at the new cell size.
-        if self.selected_folder is not None:
-            self._show_folder_photos(self.selected_folder)
+        self.photo_stream.set_slot(value)
         self._set_status(f"Thumbnail size: {value}px", transient=True)
 
     # ============================================================ actions
@@ -1615,9 +1639,10 @@ class MainWindow(Adw.ApplicationWindow):
             child = nxt
         self._film_widgets = []
         if self.selected_image_path is not None:
-            # Selects it now, or as soon as its slot exists if the folder is
-            # still filling in.
-            self._thumb_grid.select_path(self.selected_image_path)
+            # The photo last shown in the viewer: selected, and scrolled into
+            # view if the viewer stepped to one off screen.
+            self.photo_stream.select_path(self.selected_image_path, scroll=True)
+        self.photo_stream.grab_focus()
         self._refresh_actions()
 
     def on_add_folder(self) -> None:
@@ -1941,22 +1966,19 @@ class MainWindow(Adw.ApplicationWindow):
         if self._closing:
             return False
         prev = self.selected_folder.path if self.selected_folder else None
+        self.tree_root = build_tree(
+            self._displayable_records(), self.config.scanned_folders
+        )
         if rebuild_tree:
-            self.tree_root = build_tree(
-                self._displayable_records(), self.config.scanned_folders
-            )
             self._populate_sidebar()
-        else:
-            # Keep the tree_root's data current so counts/icons are fresh, but
-            # do NOT touch the tree store (that would reset expansion).
-            self.tree_root = build_tree(
-                self._displayable_records(), self.config.scanned_folders
-            )
-        if prev and self.tree_root:
+        # Otherwise keep the tree store (rebuilding it resets expansion); the
+        # tree_root data is current, so counts and icons are fresh on rebind.
+        if prev:
             node = find_node(self.tree_root, prev)
             if node:
                 self.selected_folder = node
-                self._refresh_folder_photos(node)
+        # New photos appear in place; the view keeps showing what it showed.
+        self._rebuild_stream(keep_position=True)
         return False
 
     def _scan_finished(self) -> bool:
@@ -2003,7 +2025,10 @@ class MainWindow(Adw.ApplicationWindow):
             self.config.set("window", {"width": w, "height": h})
         self._persist_sidebar_state()
         self._closing = True
-        self._thumb_grid.cancel()
+        self.photo_stream.cancel()
+        if self._persist_source:
+            GLib.source_remove(self._persist_source)
+            self._persist_source = 0
         # Explicitly quit so the process exits even if a stray GSource or the
         # daemon scan thread is still around; returning False also lets the
         # window destroy normally.

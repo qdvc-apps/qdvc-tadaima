@@ -43,13 +43,17 @@ qdvc-tadaima/
         cache.py               Cache dir, Index (JSON), scan + thumbnail gen.
         tree.py                Build filtered hierarchy; focus/ancestor logic;
                                reveal/forget helpers for sidebar expansion.
+        stream.py              The photo stream: sections + arithmetic layout.
+        metadata.py            Date taken, dimensions, camera details (EXIF).
+        heif.py                HEIF/HEIC size + EXIF from the container.
         ui_prefs.py            SHORTCUTS table, density specs, formatting.
         platform_utils.py      open/reveal helpers (read-only OS actions).
         gtk4/                  GTK 4 front-end (all gtk4_*).
             gtk4_app.py        Adw.Application; prgname, icon, accels, app.quit.
             gtk4_window.py     Main window: split view, sidebar, gallery, full.
             gtk4_actions.py    win.* Gio.SimpleActions.
-            gtk4_thumbgrid.py  Progressive thumbnail grid + decoding threads.
+            gtk4_stream.py     The photo stream widget (virtual canvas).
+            gtk4_thumbs.py     Thumbnail decoding threads + texture cache.
             gtk4_preferences.py Adw.PreferencesWindow (live-apply density).
             gtk4_shortcuts.py  Shortcuts window from SHORTCUTS.
     data/
@@ -105,7 +109,9 @@ touch a scanned folder.
 `tree.find_node` and `tree.ancestor_chain` express "Focus on folder" as pure
 data. The window keeps `focus_path` (default `/` = unfocused) and, on
 `set_focus_folder`, re-renders: ancestors flat + italic, the focused node bold,
-and its subtree indented beneath.
+and its subtree indented beneath. The photo stream shows exactly the focused
+subtree; a drill-down focus starts it at the top, while re-focusing up via an
+ancestor row keeps the folder you were viewing on screen.
 
 ## Sidebar tree (expand/collapse + focus)
 
@@ -132,9 +138,10 @@ expands the selected folder and ← collapses it (`_on_sidebar_key`).
 `_scan_worker` runs off the main thread. It calls `_live_refresh(True)` via
 `GLib.idle_add` right after `sync_index` (structure may have changed, so the
 sidebar tree is rebuilt once and subfolders appear). Every subsequent mid-scan
-refresh uses `_live_refresh(rebuild_tree=False)`, which refreshes only the
-open folder's thumbnail grid — incrementally, via `_refresh_folder_photos`, so
-only new or changed photos get slots — and does **not** rebuild the tree store; the
+refresh uses `_live_refresh(rebuild_tree=False)`, which refreshes the photo
+stream in place (`set_stream(keep_position=True)`: new photos appear, the view
+stays where it is, nothing happens if nothing changed) and does **not** rebuild
+the tree store; the
 end-of-scan refresh rebuilds it once more so folder counts are final. (Frequent
 mid-scan rebuilds made the tree flicker shut and reopen under the user — the
 "retreat" bug — and blocked digging into folders during a scan; every rebuild
@@ -142,21 +149,17 @@ restores the remembered expansion, see *Persistent sidebar state*.) Regeneration
 is gated by `has_all_derivatives`, so a normal launch only (re)generates for
 images actually missing a derivative — never the whole library.
 
-- The gallery uses a `Gtk.FlowBox` (wrapping grid). It is **non-homogeneous**,
-  `halign=FILL`, `hexpand=True`, inside a `ScrolledWindow` with
-  `propagate_natural_width(False)`, so it uses the whole viewport width and
-  packs as many columns as fit rather than clamping the column count.
-- Each thumbnail's `Gtk.Picture` is sized to the image's *true* scaled
-  dimensions (from `thumb_w`/`thumb_h`) and centered in a fixed square cell
-  wrapper. This is deliberate: a `CONTAIN` picture in a fixed box letterboxes
-  the image, so a `box-shadow` on it would float off the photo's edges. Sizing
-  the widget to hug the image puts the drop shadow and selection border
-  (`picture.tadaima-thumb` / `…:selected picture.tadaima-thumb`) on the photo's
-  real edges. Thumbnails are never cropped; portraits under-fill the cell.
-- **Selection vs. open.** The FlowBox uses `activate-on-single-click(False)`:
-  a single click only selects; double-click activates. `_on_grid_key` opens the
-  selected thumbnail on `Enter`. Activation builds `_full_images` and shows the
-  full-view page.
+- The gallery is the photo stream (see *Photo stream*). Each thumbnail's
+  `Gtk.Picture` is sized to the image's *true* scaled dimensions (from
+  `thumb_w`/`thumb_h`) and centred in its square cell. This is deliberate: a
+  `CONTAIN` picture in a fixed box letterboxes the image, so a `box-shadow` on
+  it would float off the photo's edges. Sizing the widget to hug the image puts
+  the drop shadow and selection ring (`picture.tadaima-thumb` /
+  `.tadaima-thumb-selected`) on the photo's real edges. Thumbnails are never
+  cropped; portraits under-fill the cell.
+- **Selection vs. open.** A single click only selects; double-click or `Enter`
+  opens (`_on_photo_activated`), which builds `_full_images` from **that
+  photo's folder** and shows the full-view page.
 - **Zoom.** `Ctrl +` / `Ctrl -` / `Ctrl 0` (`on_zoom_in/out/reset`) change
   `self._thumb_zoom` in 30px steps (clamped 80–420, persisted as
   `config.thumb_zoom`); the default 150 gives roughly ten thumbnails across a
@@ -199,19 +202,42 @@ Preferences applies it live.
 
 ## Photo metadata
 
-`qdvc/metadata.py` (pure) reads a photo's display metadata: EXIF
-`DateTimeOriginal` (falling back to `DateTime`, then filesystem mtime, the
-fallback labelled "(file date)"), pixel dimensions, and human-readable file
-size. `_metadata_line` formats the one-line summary shown in both the gallery
-filename bar and the full-view caption. The `win.photo-info` action (Ctrl+I;
-info button left of the primary menu in both the gallery and the viewer) toggles
-a right-hand `Gtk.Revealer` (`_build_info_panel`) that **wraps both pages** (a
-sibling of the page `Gtk.Stack` in `_build_ui`), so it stays open or closed
-consistently across the gallery and the viewer and shows the selected photo's
-metadata in either. Its open/closed state persists via `config.info_open`. It
-shows metadata fields only — name, date taken, dimensions, file size, path
-(selectable) — and deliberately does **not** render the photo. `_update_info_panel`
-refreshes it on selection change and on viewer navigation while open.
+`qdvc/metadata.py` (pure) reads a photo's display metadata: the date taken,
+pixel dimensions, human-readable file size, and the camera details.
+
+- **Date taken** is EXIF `DateTimeOriginal`, falling back to `DateTime`, then
+  the file's mtime (labelled "(file date)"). Pillow's `getexif()` returns only
+  the main IFD (IFD0), and cameras store `DateTimeOriginal` in the **Exif
+  sub-IFD**, so it is read with `get_ifd(0x8769)`. (Before, only IFD0 was read,
+  so real photos showed `DateTime`, which editors overwrite on save.)
+- **Camera details** (`camera_details`) are a deliberate selection, as
+  `(label, value)` rows, only those present: Camera (make and model, without
+  "Canon Canon EOS R5" repetition), Lens, Focal length (with its 35 mm
+  equivalent when different), Aperture, Shutter speed, ISO, Exposure
+  compensation (omitted at 0), Flash (omitted when the camera has none) and
+  Location (from the GPS IFD, with altitude). Left out on purpose: technical
+  tags with little meaning to a viewer (metering and exposure modes, white
+  balance, colour space, software, maker notes, serial numbers).
+- **HEIC.** Pillow needs pillow-heif for HEIC, and even with it an open can
+  fail. Whenever Pillow can't open a HEIF file (or finds no EXIF in it),
+  `qdvc/heif.py` reads the container directly: the primary item (`pitm`)'s
+  `ispe` property gives the size, swapped for a 90°/270° `irot` (decoders apply
+  it, so this is the size as displayed); the item of type `Exif` located by
+  `iloc` (in `mdat`, or in `idat` for construction method 1) gives the EXIF
+  block, whose TIFF data is loaded into a Pillow `Image.Exif`. Previously such
+  files showed "Unknown dimensions". `tests/test_metadata.py` builds HEIF files
+  box by box (rotation, `idat`, 16-bit `ipma` indices, `iloc` v2, truncated and
+  junk files) to cover this without pillow-heif.
+
+`_metadata_line` formats the one-line summary shown in both the gallery
+caption bar and the full-view caption; `_metadata_for` remembers the last
+photo's metadata, as both it and the information sidebar ask on every
+selection. The `win.photo-info` action (Ctrl+I; info button left of the primary
+menu in both the gallery and the viewer) toggles a right-hand `Gtk.Revealer`
+(`_build_info_panel`) that **wraps both pages** (a sibling of the page
+`Gtk.Stack` in `_build_ui`), so it stays open or closed consistently across
+the gallery and the viewer. Its open/closed state persists via
+`config.info_open`.
 
 ## Menus & shortcuts
 
@@ -254,88 +280,142 @@ they don't spring back open at the next rebuild.
 which also expands every folder between the focused row and the remembered
 folder (`tree.reveal_chain`), so the last folder is shown and selected even
 when its parents were not saved as expanded (such as a config written by the
-bug above). The scroll waits for the window's next `after-paint`
-(`_scroll_sidebar_to`): before the list has been laid out GTK cannot scroll to
-a row. `_on_tree_selected` only rebuilds the grid when the selected *folder*
-changes, not when its position shifts because rows above it opened or closed.
+bug above), and then scrolls the photo stream to that folder. The sidebar
+scroll waits for the window's next `after-paint` (`_scroll_sidebar_to`): before
+the list has been laid out GTK cannot scroll to a row.
 
-## Thumbnail grid — the slot model
+**Startup ordering.** GTK lays the window out at a higher priority than idle
+callbacks, so the stream can lay out — and its scrollspy report the *first*
+folder — before `_restore_session_state` runs. Until it has run
+(`_session_restored`), `_on_stream_section` ignores reports; otherwise the
+first folder would overwrite the remembered one.
 
-Each image occupies a fixed-width **slot** (`SLOT_WIDTH`, default 150px, scaled
-by the Ctrl +/-/0 zoom via `config.thumb_zoom`). The grid is a `Gtk.FlowBox`
-with `homogeneous=False`; every `Gtk.FlowBoxChild` is a `slot_w × slot_w`
-square, so all slots are identical — FlowBox packs `floor(pane / (slot_w +
-spacing))` slots per row, rows and columns are regular, and the thumbnail is
-centred within the square both horizontally and vertically. The slot caps
-**both** the width and the height of a thumbnail at `slot_w`, so a very tall
-image scales down to fit (becoming narrow) instead of producing a super-tall
-row. Only fully-derived images reach the grid (see below), so the thumbnail is
-always the cached derivative (`rec.thumb_path`) — there is no original-file
-fallback.
+## Sidebar as scrollspy
 
-A subtle but critical detail that caused repeated trouble: a `Gtk.Picture` fed a
-*file* reports the full image's pixel dimensions as its natural size, and GTK
-lays FlowBox out on that — producing one giant column, per-folder-varying slot
-widths, and a runaway measure/allocate cycle that pegs a CPU core. The fix is to
-decode the thumbnail derivative into a `GdkPixbuf` already scaled to fit the
-slot (`ui_prefs.fit_within`: width and height both ≤ `slot_w`, never upscaled),
-wrap it in a `Gdk.Texture`, and hand that to the Picture, whose size request is
-that same fitted size. Its size is then bounded and stable — no layout thrash.
-Each slot is a `slot_w`-wide box of that natural height with the thumbnail
-centred; uniform width means FlowBox packs a predictable column count.
+The sidebar and the stream are kept in step both ways.
 
-## Thumbnail grid — progressive loading
+- **Stream → sidebar.** `PhotoStream` calls `_on_stream_section` whenever the
+  folder at the top of the view changes. The window makes it `selected_folder`
+  (saved 1.5 s after scrolling settles, `_schedule_persist`, not once per
+  folder passed) and calls `_highlight_in_sidebar`, which selects that folder's
+  row or, if it is hidden in a collapsed folder, its **nearest visible
+  parent's** — never expanding or collapsing anything — and scrolls the
+  sidebar to it. `_spy_target` remembers the real folder, so the highlight
+  moves down to it when you expand its parent, and back up when you collapse
+  (`_rehighlight` after every user expand/collapse, and after every store
+  rebuild via `_reapply_sidebar_state`).
+- **Sidebar → stream.** A row selected by the user (click, or arrow keys)
+  goes through `_on_tree_selected` → `_go_to_folder` →
+  `PhotoStream.scroll_to_folder`: the folder's heading (or, for a folder with
+  only subfolders, its first descendant's) is scrolled to the top. A selection
+  made by the scrollspy is not navigation: `_spy_syncing` (and
+  `_restoring_state` during restores) make `_on_tree_selected` ignore it.
+  Because the spy selects rows, clicking an already-highlighted row changes no
+  selection; a capture-phase click gesture on each row (`_on_row_left_click`,
+  which ignores clicks on the expander arrow) navigates in that case too.
+- **Holding the clicked folder.** After a jump, the stream "holds" that folder
+  as current until the user scrolls (`PhotoStream.holding`), and the window
+  keeps the *clicked* row highlighted meanwhile (`_clicked_folder`). Without
+  that, clicking a parent with no photos of its own would immediately
+  highlight its first child, and a short folder at the very end — which the
+  view can't bring to the top — would be reported as the one above it.
 
-Opening a folder used to build the whole grid synchronously: every thumbnail
-was decoded and scaled on the main thread before the next frame, so a folder of
-a few hundred photos froze the window for seconds (roughly 1.6 ms of decoding
-per photo, plus widget creation). And during a background scan
-`_live_refresh` rebuilt the open folder from scratch every 0.6 s. Now
-`gtk4_thumbgrid.ThumbGrid` owns the FlowBox's contents:
+## Photo stream
 
-- **Slots in slices.** `show()` clears the grid and schedules `_fill` as an
-  idle callback, which inserts slots until `FRAME_BUDGET_S` (8 ms) is used up,
-  then returns True to run again after input and redraws. Idle priority is
-  below GTK's redraw priority, so the window keeps painting and responding.
-- **Placeholders at final size.** `_make_thumb` builds an empty Picture sized
-  from `rec.thumb_w/thumb_h` (recorded in the index when the thumbnail is
-  made), styled `tadaima-thumb-loading` (a faint tile, no shadow). Nothing
-  moves when the picture arrives. Records without stored dimensions get a
-  square placeholder, resized when decoded.
-- **Decoding off the main thread.** `ThumbDecoder` runs `DECODE_THREADS` (2)
-  daemon threads that decode with `GdkPixbuf.Pixbuf.new_from_file_at_scale`
-  straight to display size (gdk-pixbuf's JPEG/PNG loaders are thread-safe and
-  PyGObject drops the GIL while they run). Finished pixbufs queue up and are
-  turned into textures by one idle `_drain` per batch, again within the frame
-  budget. `_drain` resets its "scheduled" flag under the same lock the workers
-  use, so a result finishing at that instant cannot be stranded — and it
-  returns False once empty (an idle that keeps returning True spins a core;
-  see *Viewer CPU*).
-- **Cancellation.** `show()` and window close call `cancel()`: the fill idle is
-  removed and `ThumbDecoder.clear()` drops queued jobs and undelivered results
-  and bumps a generation counter, so decodes already in flight for the old
-  folder are discarded when they finish.
-- **Incremental updates.** `update()` (from `_refresh_folder_photos`, i.e. a
-  scan's live refresh of the folder on screen) keys slots by
-  `ui_prefs.thumb_key` (path, mtime, size): slots for photos still present are
-  kept — with their picture, selection and scroll position — removed photos'
-  slots are dropped, and the fill walks the new list inserting slots for new or
-  changed photos at their index. An unchanged list is a no-op. A slot whose
-  decode failed (e.g. its thumbnail was being regenerated) is rebuilt by the
-  next update.
-- **Selection after the viewer.** `on_back` calls `select_path`, which selects
-  the slot now or as soon as the fill creates it.
+The main area is one continuous, sectioned grid of every photo under the
+focused folder. Two halves:
 
-Zooming (Ctrl +/-/0) changes every slot's size, so it reloads with `show()`.
+**`qdvc/stream.py` (pure).** `build_stream(focus)` walks the focused subtree
+in the sidebar's order (pre-order: a folder's own photos, then its subfolders,
+sorted by name) and makes a `Section` for each folder with photos of its own:
+its path, name and a **context** — the parent path from the scanned folder it
+belongs to (`holiday-photos-copenhagen / nyhavn` for `boats`), or, for a
+scanned folder itself, the directory it is in (`~/Desktop`). `Stream` adds flat
+indexing (photo *i* of the whole stream ↔ section, by path) and a
+`signature()` that changes whenever anything shown changes.
+
+`StreamLayout(stream, width, slot)` places it all on a canvas: per section a
+heading (`HEADER_HEIGHT`), then rows of square `slot × slot` cells,
+`SPACING` apart, as many columns as fit, with `SECTION_GAP` above every
+heading but the first. All geometry is **arithmetic per section**: it stores
+only each section's heading y, first-row y, row count and end y, so a relayout
+costs O(folders) — 0.2 ms for 100,000 photos — and everything else is
+computed: `cell(i)`, `photo_at(x, y)` (clicks), `photos_between(y0, y1)` and
+`sections_between` (what to show), `section_at(y)` (the scrollspy),
+`neighbour(i, move)` (keyboard; ↑/↓ cross into the neighbouring section at the
+same column, clamped to a short last row), and `anchor_at(y)` /
+`y_for_anchor` (keeping your place when the layout changes: anchored on the
+photo row, or heading, at the top of the view).
+
+**`gtk4/gtk4_stream.py`: a virtual canvas.** A `Gtk.Fixed` as tall as the
+layout sits in a `Gtk.Viewport` in a `Gtk.ScrolledWindow`. Only photos and
+headings within a screen above and below the view have widgets
+(`_update_visible`, on every scroll; skipped when the visible row range hasn't
+changed); they are recycled through pools, so scrolling 50,000 photos uses the
+same ~100 widgets. A thumbnail is a `Gtk.Picture` sized to the photo's
+proportions (from `thumb_w/thumb_h` in the index, via `ui_prefs.fit_within`)
+and centred in its cell, so the shadow and selection ring
+(`tadaima-thumb-selected`) sit on the photo's real edges; until its texture
+arrives it shows the faint `tadaima-thumb-loading` tile at that same size.
+Things checked against real libgtk-4 (4.14, under Xvfb):
+
+- The horizontal policy is **EXTERNAL**, not NEVER. With NEVER, the canvas's
+  widest tile becomes the window's minimum width, so it could never be
+  shrunk — and the stream never relayout narrower. With EXTERNAL the minimum
+  is 0 and the viewport's horizontal adjustment page size is the visible
+  width, which is how the stream learns its width (`_on_hadj_changed`; it
+  relayouts only when the column count changes).
+- A canvas millions of pixels tall works. But a new height reaches the
+  vertical adjustment only at the next allocation, and a `set_value` beyond
+  the old height is **clamped**. So `_scroll_to_y` defers a scroll target the
+  scrollbar can't reach yet (`_pending_y`) and applies it from the
+  adjustment's `changed` signal.
+- The viewport's `scroll-to-focus` is off: the canvas is one huge focusable
+  widget, and scrolling "to" it would jump.
+
+Selection, keyboard (`_on_key`: arrows, Page Up/Down, Home/End, Enter) and
+clicks (`_on_pressed`: `photo_at` hit-testing, double-click opens) are handled
+by the stream itself. The scrollspy's "current" folder is the one whose heading
+is at or above `SPY_OFFSET` px below the top of the view, the last one when
+scrolled to the very bottom, or the held folder after `scroll_to_folder`
+(see *Sidebar as scrollspy*). Zooming (`set_slot`) keeps the selected photo at
+the same height on screen if visible, else the top row; a scan refresh
+(`set_stream(keep_position=True)`) keeps the top row in place even when
+photos are added above it, and is a no-op when the signature is unchanged.
+
+**Thumbnails** (`gtk4/gtk4_thumbs.py`). `ThumbDecoder` decodes cached
+thumbnail JPEGs on two daemon threads with
+`GdkPixbuf.Pixbuf.new_from_file_at_scale`, straight to display size
+(gdk-pixbuf's loaders are thread-safe; PyGObject drops the GIL while they
+run), and hands results back in batches from one idle callback that yields
+after `FRAME_BUDGET_S` (8 ms) and returns False once empty (an idle that keeps
+returning True spins a core; see *Viewer CPU*). Its queue is **replaced** on
+every scroll (`set_queue`): photos on screen first, then those just off it, so
+whatever you're looking at loads next and photos flicked past are never
+decoded. Decodes in flight are not re-queued; `clear()` discards them.
+Decoded textures go into `TextureCache`, an LRU **capped by bytes** (160 MB of
+pixels) rather than by count, since a 420 px thumbnail is 7× a 150 px one.
+Cache keys include the slot size; a failed decode isn't retried until the next
+stream refresh.
+
+**Before this design** the main area showed one folder at a time in a
+`Gtk.FlowBox`: a FlowBox makes a widget per photo, which first froze the UI on
+big folders (fixed by filling it progressively) and cannot scale to a whole
+library; it was replaced by the canvas above.
 
 ## Info sidebar
 
 The `win.photo-info` action toggles a right-hand `Gtk.Revealer`
-(`_build_info_panel`) that slides in. It shows metadata fields only — name, date
-taken, dimensions, file size, path (selectable) — and deliberately does **not**
-render the photo itself. `_update_info_panel` refreshes it on selection change
-while open; a collapsed `SLIDE_LEFT` revealer reserves no width, so the grid
-gets the full pane when the panel is closed.
+(`_build_info_panel`) that slides in. It shows metadata only — name, date
+taken, dimensions, file size, path (selectable) — and, in a **Camera** group,
+the camera details from `metadata.camera_details` (rows built per photo by
+`_set_camera_rows`; "No camera details in this photo." when there are none).
+A geotagged photo's Location row has a button that opens the spot on
+OpenStreetMap (`_open_map`, via `Gtk.UriLauncher`) — the only time Tadaima
+sends anything about a photo off the machine, and only on that click. It
+deliberately does **not** render the photo itself. `_update_info_panel`
+refreshes it on selection change while open; a collapsed `SLIDE_LEFT` revealer
+reserves no width, so the stream gets the full pane when the panel is closed.
 
 ## Full-view focus
 
@@ -505,9 +585,20 @@ force regeneration.
 - **Sidebar state** (`tests/test_sidebar_state.py`): runs the real
   `MainWindow` expansion/restore methods against stand-in tree rows that
   behave like GTK's (including torn-down rows).
-- **Thumbnail grid** (`tests/test_thumb_grid.py`): `ThumbGrid` against a
-  list-backed stand-in FlowBox (slices, incremental updates, stale results,
-  pending selection) and the real `ThumbDecoder` threads with a stub decoder.
+- **Sidebar as scrollspy** (also `tests/test_sidebar_state.py`): the window's
+  `_on_stream_section` / `_go_to_folder` / `_on_tree_selected` against those
+  rows: nearest-visible-parent highlighting, the startup gate, held clicks,
+  and that the spy's own selections don't navigate.
+- **Photo stream** (`tests/test_stream.py`): the pure layout (geometry,
+  hit-testing, keyboard neighbours, anchors, an O(folders) relayout budget),
+  and the real `PhotoStream` against a stand-in toolkit — adjustments that
+  clamp and signal like GTK's, and an `allocate()` step for GTK's next layout
+  pass — covering recycling, the scrollspy, deferred scrolls, holding,
+  resizing, scans adding photos above, keyboard, zoom and decoding. Also the
+  real `ThumbDecoder` threads (queue replacement, discarding in-flight work)
+  and the byte-capped `TextureCache`.
+- **Metadata** (`tests/test_metadata.py`): HEIF files built box by box, read
+  without pillow-heif; JPEG camera details and the date-taken fix; formatting.
 - **Import smoke test** (`tests/test_import_smoke.py`): a permissive fake `gi`
   lets every `qdvc.gtk4.*` module import, exercising class bodies and top-level
   code.

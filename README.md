@@ -11,21 +11,34 @@ thumbnails and its index exclusively to a disposable cache under
 
 - **Expandable tree sidebar.** A resizable sidebar shows a folder hierarchy
   filtered down to just the paths leading to (and beneath) the folders you have
-  added, with expand/collapse arrows on any folder that has subfolders. The main
-  area shows the photos in the selected folder as a wrapping grid of thumbnails,
-  each with a small drop shadow.
+  added, with expand/collapse arrows on any folder that has subfolders.
+- **One continuous stream of photos.** The main area is a single scrolling grid
+  of every photo under the focused folder (all of them, when unfocused), in the
+  sidebar's order. Each folder's photos sit under a heading with the folder's
+  name and, dimmed beside it, where it lives ("boats  holiday-photos-copenhagen
+  / nyhavn"), so two folders called "2024" can be told apart.
+- **The sidebar follows along.** As you scroll, the sidebar highlights the
+  folder you're looking at, like a table of contents. If that folder is hidden
+  inside a collapsed one, its nearest visible parent is highlighted instead;
+  scrolling never opens or closes folders. Click a folder (or move to it with
+  the arrow keys) to jump to its photos; a folder with only subfolders jumps to
+  the first of them.
 - **Uncropped thumbnails.** Thumbnails keep the original photo's proportions —
   a portrait stays a portrait — and the drop shadow and selection border sit on
   the photo's real edges. Use `Ctrl +` / `Ctrl -` to make thumbnails larger or
   smaller and `Ctrl 0` to reset; the default shows roughly ten across on a
   typical 1920-wide window.
-- **Big folders open instantly.** The grid lays out every photo's slot right
-  away and the thumbnails fill in as they load in the background, so the window
-  stays responsive however many photos a folder holds.
+- **Fast however big the library.** Only the photos near what's on screen
+  exist as widgets, and their thumbnails load in the background (what's on
+  screen first), so tens of thousands of photos scroll as smoothly as a few.
+  Until a thumbnail arrives, its place shows a faint tile of the right size.
+- **Keyboard.** Arrow keys move the selection through the stream (↑/↓ cross
+  into the folder above or below), `Page Up`/`Page Down` move a screen at a
+  time, `Home`/`End` go to the first and last photo, and `Enter` opens one.
 - **Full view with a filmstrip.** Single-click a thumbnail to select it;
   double-click (or select and press `Enter`) to open it full-window. A filmstrip
-  of square thumbnails runs along the top; prev/next arrows sit on either side,
-  and the ← / → keys step through photos. The filename and position (e.g.
+  of the photo's folder runs along the top; prev/next arrows sit on either side,
+  and the ← / → keys step through that folder's photos. The filename and position (e.g.
   "3 of 40") appear centered in a bar beneath the picture. The window title
   never changes. Click **Back to Library** (top-left) or press `Esc` to return,
   with your selection intact.
@@ -35,9 +48,14 @@ thumbnails and its index exclusively to a disposable cache under
   the viewer's caption, and an **info button** (left of the menu, in both the
   gallery and the viewer) opens a right-hand information sidebar
   showing the full metadata (no image preview).
-- **Session memory.** The sidebar remembers which folders you had expanded, your
-  selection, and your focus between runs. On launch it opens the way to the
-  folder you were last looking at, selects it and scrolls it into view.
+- **Camera details.** The information sidebar also shows the photo's camera
+  details, where the photo has them: camera, lens, focal length (with its 35 mm
+  equivalent), aperture, shutter speed, ISO, exposure compensation, flash, and
+  the location it was taken (with a button to see it on OpenStreetMap). The date
+  taken is the moment the shutter fired, not when an editor last saved the file.
+- **Session memory.** The sidebar remembers which folders you had expanded, the
+  folder you were looking at, and your focus between runs. On launch it opens
+  the way to that folder, highlights it and scrolls the stream back to it.
 - **Folder counts.** Every folder shows, on the right, how many images it
   contains recursively (children, grandchildren, and deeper).
 - **Photo-crop folder icons.** A folder that has images directly inside it gets
@@ -71,7 +89,9 @@ thumbnails and its index exclusively to a disposable cache under
 - **Cache tools.** The main menu offers **Cache status…** and **Regenerate all
   caches**.
 
-Supported formats: JPEG, PNG, HEIC (HEIC is best-effort; see below).
+Supported formats: JPEG, PNG, HEIC (HEIC thumbnails need pillow-heif; see
+below). A HEIC photo's dimensions and camera details are read straight from the
+file, so they show even where Pillow can't open it.
 
 ## Requirements
 

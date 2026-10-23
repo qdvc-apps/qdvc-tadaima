@@ -87,10 +87,14 @@ def _window(tree_root, expanded=(), pending=None):
     w._restoring_state = False
     w._rebuilding_sidebar = False
     w._closing = False
-    w._shown_folder_path = None
+    w._spy_target = None
+    w._spy_syncing = False
     w._tree_model = FakeTreeModel([FolderItem(tree_root, style="focused")])
     w.selected_positions = []
-    w._selection = types.SimpleNamespace(set_selected=w.selected_positions.append)
+    w._selection = types.SimpleNamespace(
+        set_selected=w.selected_positions.append,
+        get_selected=lambda: w.selected_positions[-1] if w.selected_positions else -1,
+    )
     w.scrolled_to = []
     w._scroll_sidebar_to = w.scrolled_to.append
     return w
@@ -155,11 +159,82 @@ def test_startup_reveals_and_selects_the_last_folder():
     assert w.config.expanded_folders == []
 
 
-def test_restore_without_reveal_keeps_collapsed_parents_collapsed():
+def test_restore_without_reveal_highlights_nearest_visible_parent():
+    # A rebuild mid-session: the current folder sits inside collapsed folders.
+    # Like the scrollspy, the highlight goes to its nearest visible parent and
+    # nothing is expanded.
     w = _window(_tree(), expanded={"/"}, pending=PHOTOS)
     w._reapply_sidebar_state()
-    assert w.selected_positions == []  # its parents are closed, so no row
-    assert w.scrolled_to == []
+    assert w.selected_positions == [1]  # "/", then "/home" is row 1
+    assert w.scrolled_to == ["/home"]
+    assert w._expanded == {"/"}
+    assert w._spy_target == PHOTOS  # still tracking the real folder
+
+
+class FakeStream:
+    def __init__(self):
+        self.holding = False
+        self.scrolled = []
+
+    def scroll_to_folder(self, path):
+        self.scrolled.append(path)
+        self.holding = True
+        return True
+
+
+def _spy_window(expanded):
+    w = _window(_tree(), expanded=expanded)
+    w.photo_stream = FakeStream()
+    w._session_restored = True
+    w._clicked_folder = None
+    w._persist_source = 0
+    w._restore_expanded(set(expanded))
+    return w
+
+
+def _section(path):
+    return types.SimpleNamespace(path=path, name=os.path.basename(path))
+
+
+def test_scrollspy_highlights_the_folder_or_its_nearest_visible_parent():
+    w = _spy_window({"/", "/home", "/home/james"})
+    # Rows: /, home, james, Other, Pictures (collapsed, so 2024 is hidden).
+    w._on_stream_section(_section(PHOTOS))
+    assert w.selected_positions[-1] == 4 and w.scrolled_to[-1] == "/home/james/Pictures"
+    assert w.selected_folder.path == PHOTOS          # the real folder is current
+    assert w._expanded == {"/", "/home", "/home/james"}   # nothing expanded
+    assert w.photo_stream.scrolled == []             # highlighting isn't navigating
+    w._on_stream_section(_section("/home/james/Other"))
+    assert w.selected_positions[-1] == 3
+
+
+def test_scrollspy_waits_for_the_session_restore():
+    w = _spy_window({"/"})
+    w._session_restored = False
+    w._on_stream_section(_section("/home/james/Other"))
+    assert w.selected_positions == [] and w.selected_folder is None
+
+
+def test_sidebar_click_navigates_and_keeps_the_clicked_folder_highlighted():
+    w = _spy_window({"/", "/home", "/home/james"})
+    james = w.tree_root.children[0].children[0]
+    w._go_to_folder(james)
+    assert w.photo_stream.scrolled == ["/home/james"]
+    # The stream shows james's first subfolder; james stays highlighted.
+    w._on_stream_section(_section("/home/james/Other"))
+    assert w.scrolled_to[-1] == "/home/james" and w.selected_folder.path == "/home/james"
+    # Once the user scrolls on, the spy takes over again.
+    w.photo_stream.holding = False
+    w._on_stream_section(_section(PHOTOS))
+    assert w.scrolled_to[-1] == "/home/james/Pictures"
+
+
+def test_spy_selection_does_not_navigate():
+    w = _spy_window({"/", "/home", "/home/james"})
+    w._spy_syncing = True
+    w._on_tree_selected(types.SimpleNamespace(get_selected_item=lambda: 1 / 0), None)
+    w._spy_syncing = False
+    assert w.photo_stream.scrolled == []
 
 
 if __name__ == "__main__":
@@ -167,5 +242,9 @@ if __name__ == "__main__":
     test_rebuild_guard_ignores_notifications()
     test_user_expand_and_collapse_are_remembered()
     test_startup_reveals_and_selects_the_last_folder()
-    test_restore_without_reveal_keeps_collapsed_parents_collapsed()
+    test_restore_without_reveal_highlights_nearest_visible_parent()
+    test_scrollspy_highlights_the_folder_or_its_nearest_visible_parent()
+    test_scrollspy_waits_for_the_session_restore()
+    test_sidebar_click_navigates_and_keeps_the_clicked_folder_highlighted()
+    test_spy_selection_does_not_navigate()
     print("ALL SIDEBAR STATE TESTS PASSED")
