@@ -1,0 +1,63 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>CFBundleDevelopmentRegion</key>
+	<string>en</string>
+	<key>CFBundleDisplayName</key>
+	<string>QDVC Tadaima</string>
+	<key>CFBundleExecutable</key>
+	<string>QDVCTadaima</string>
+	<key>CFBundleIconFile</key>
+	<string>AppIcon</string>
+	<key>CFBundleIdentifier</key>
+	<string>org.qdvc.tadaima.mac</string>
+	<key>CFBundleInfoDictionaryVersion</key>
+	<string>6.0</string>
+	<key>CFBundleName</key>
+	<string>QDVC Tadaima</string>
+	<key>CFBundlePackageType</key>
+	<string>APPL</string>
+	<key>CFBundleShortVersionString</key>
+	<string>0.1.0</string>
+	<key>CFBundleVersion</key>
+	<string>1</string>
+	<key>CFBundleDocumentTypes</key>
+	<array>
+		<dict>
+			<!-- Folders: drop one on the Dock icon (or Open With) to add it.
+			     Alternate rank, so Tadaima never becomes the default for folders. -->
+			<key>CFBundleTypeName</key>
+			<string>Folder</string>
+			<key>CFBundleTypeRole</key>
+			<string>Viewer</string>
+			<key>LSHandlerRank</key>
+			<string>Alternate</string>
+			<key>LSItemContentTypes</key>
+			<array>
+				<string>public.folder</string>
+			</array>
+		</dict>
+	</array>
+	<key>LSApplicationCategoryType</key>
+	<string>public.app-category.photography</string>
+	<key>LSMinimumSystemVersion</key>
+	<string>14.0</string>
+	<key>NSHighResolutionCapable</key>
+	<true/>
+	<key>NSHumanReadableCopyright</key>
+	<string>QDVC Tadaima contributors</string>
+	<key>NSPrincipalClass</key>
+	<string>NSApplication</string>
+	<key>NSDesktopFolderUsageDescription</key>
+	<string>Tadaima shows the photos in folders you choose. It only reads them.</string>
+	<key>NSDocumentsFolderUsageDescription</key>
+	<string>Tadaima shows the photos in folders you choose. It only reads them.</string>
+	<key>NSDownloadsFolderUsageDescription</key>
+	<string>Tadaima shows the photos in folders you choose. It only reads them.</string>
+	<key>NSRemovableVolumesUsageDescription</key>
+	<string>Tadaima shows the photos in folders you choose. It only reads them.</string>
+	<key>NSNetworkVolumesUsageDescription</key>
+	<string>Tadaima shows the photos in folders you choose. It only reads them.</string>
+</dict>
+</plist>

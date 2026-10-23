@@ -33,7 +33,7 @@ The rest of the shared philosophy holds:
 ## Directory & file layout
 
 ```
-qdvc-tadaima/
+qdvc-tadaima-gtk4/            (the GTK 4 edition, in the qdvc-tadaima monorepo)
     qdvc_tadaima.py            Thin dispatcher (backend select before GTK import).
     qdvc/                      PURE package — no GTK imports.
         __init__.py            APP_ID, APP_NAME, __version__, constants.
@@ -577,6 +577,16 @@ force regeneration.
 - **Change sidebar density**: `ui_prefs.DENSITY_SPECS` + `_apply_density`.
 - **Change cache layout**: `qdvc/cache.py` (bump `INDEX_VERSION`).
 
+## Parity with the macOS edition
+
+The macOS edition (`../qdvc-tadaima-mac`) ports this edition's pure modules
+(`paths` via `os.path`, `tree.py`, `stream.py`, `config.normalize_scanned_folders`,
+`cache.looks_like_image`, `naming.cache_key`, `metadata.camera_details` and its
+formatters, `ui_prefs.fit_within` / `format_count`) to Swift, and replays a
+fixture generated from them. After changing any of those, run
+`python3 ../qdvc-tadaima-mac/tools/make_fixtures.py` and port the change: the
+Swift tests (`swift test` in that folder) list every difference.
+
 ## Testing without a display
 
 - **Pure-model tests** (`tests/test_tree.py`, `tests/test_core.py`): build temp
@@ -613,6 +623,9 @@ for t in tests/test_*.py; do python3 "$t"; done
 `scripts/build-app.sh` runs the same tests and refuses to install if any fail.
 
 ## Deployment
+
+The repository root's `scripts/build-app.sh` runs this edition's script on
+Linux (and the macOS edition's on a Mac), passing every option through.
 
 `scripts/build-app.sh --install` checks the dependencies, runs the tests,
 stages a copy in `build/` and installs it per user: the program to

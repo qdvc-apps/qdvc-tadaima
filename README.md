@@ -1,159 +1,59 @@
 # QDVC Tadaima
 
-A read-only photo browser for Linux, built with Python 3 + GTK 4 / libadwaita.
+A read-only photo browser: it shows the photos in the folders you choose as one
+continuous stream, a heading per folder, with a folder sidebar that follows
+along as you scroll. It **never changes anything in those folders** — it only
+reads them, and keeps its thumbnails and index in a cache of its own.
+"Tadaima" is what you call out in Japanese when you come home.
 
-Tadaima shows the photos in folders you explicitly add. It **never modifies**
-anything in those folders — it opens images for reading only, and writes
-thumbnails and its index exclusively to a disposable cache under
-`XDG_CACHE_HOME`.
+This repository holds two native editions of the same app:
 
-## What it does
+| Edition | Folder | Built with |
+| --- | --- | --- |
+| Linux (GNOME) | [qdvc-tadaima-gtk4](qdvc-tadaima-gtk4) | Python 3, GTK 4 and libadwaita |
+| macOS | [qdvc-tadaima-mac](qdvc-tadaima-mac) | Swift, SwiftUI and AppKit |
 
-- **Expandable tree sidebar.** A resizable sidebar shows a folder hierarchy
-  filtered down to just the paths leading to (and beneath) the folders you have
-  added, with expand/collapse arrows on any folder that has subfolders.
-- **One continuous stream of photos.** The main area is a single scrolling grid
-  of every photo under the focused folder (all of them, when unfocused), in the
-  sidebar's order. Each folder's photos sit under a heading with the folder's
-  name and, dimmed beside it, where it lives ("boats  holiday-photos-copenhagen
-  / nyhavn"), so two folders called "2024" can be told apart.
-- **The sidebar follows along.** As you scroll, the sidebar highlights the
-  folder you're looking at, like a table of contents. If that folder is hidden
-  inside a collapsed one, its nearest visible parent is highlighted instead;
-  scrolling never opens or closes folders. Click a folder (or move to it with
-  the arrow keys) to jump to its photos; a folder with only subfolders jumps to
-  the first of them.
-- **Uncropped thumbnails.** Thumbnails keep the original photo's proportions —
-  a portrait stays a portrait — and the drop shadow and selection border sit on
-  the photo's real edges. Use `Ctrl +` / `Ctrl -` to make thumbnails larger or
-  smaller and `Ctrl 0` to reset; the default shows roughly ten across on a
-  typical 1920-wide window.
-- **Fast however big the library.** Only the photos near what's on screen
-  exist as widgets, and their thumbnails load in the background (what's on
-  screen first), so tens of thousands of photos scroll as smoothly as a few.
-  Until a thumbnail arrives, its place shows a faint tile of the right size.
-- **Keyboard.** Arrow keys move the selection through the stream (↑/↓ cross
-  into the folder above or below), `Page Up`/`Page Down` move a screen at a
-  time, `Home`/`End` go to the first and last photo, and `Enter` opens one.
-- **Full view with a filmstrip.** Single-click a thumbnail to select it;
-  double-click (or select and press `Enter`) to open it full-window. A filmstrip
-  of the photo's folder runs along the top; prev/next arrows sit on either side,
-  and the ← / → keys step through that folder's photos. The filename and position (e.g.
-  "3 of 40") appear centered in a bar beneath the picture. The window title
-  never changes. Click **Back to Library** (top-left) or press `Esc` to return,
-  with your selection intact.
-- **Selected-photo information.** In the main view, a bar just above the status
-  bar shows the selected photo's name, date taken (from EXIF, falling back to
-  the file date), pixel dimensions, and file size. The same details appear in
-  the viewer's caption, and an **info button** (left of the menu, in both the
-  gallery and the viewer) opens a right-hand information sidebar
-  showing the full metadata (no image preview).
-- **Camera details.** The information sidebar also shows the photo's camera
-  details, where the photo has them: camera, lens, focal length (with its 35 mm
-  equivalent), aperture, shutter speed, ISO, exposure compensation, flash, and
-  the location it was taken (with a button to see it on OpenStreetMap). The date
-  taken is the moment the shutter fired, not when an editor last saved the file.
-- **Session memory.** The sidebar remembers which folders you had expanded, the
-  folder you were looking at, and your focus between runs. On launch it opens
-  the way to that folder, highlights it and scrolls the stream back to it.
-- **Folder counts.** Every folder shows, on the right, how many images it
-  contains recursively (children, grandchildren, and deeper).
-- **Photo-crop folder icons.** A folder that has images directly inside it gets
-  a small square crop of one of those photos in place of the plain folder icon,
-  at the same size so the layout stays aligned. (Only this tiny icon is
-  cropped; grid thumbnails never are.)
-- **Focus on folder.** Right-click any folder for a menu with **Focus on
-  folder** (makes it the root of the view, with its ancestors listed flat and in
-  italics above it) and **Locate on disk** (reveals it in your file manager).
-  Click a flattened ancestor to re-focus there; the top level `/` is the
-  default, unfocused view. Use the → key to expand a selected folder in the
-  sidebar and ← to collapse it.
-- **Status bar.** A bar at the bottom names the photo currently being processed
-  during a background scan and updates continuously, so you can see work is
-  progressing.
-- **Managing folders.** Add and remove scanned folders from the **Scanned
-  folders** window (main menu, or `Ctrl+O`). Changes are staged and only take
-  effect when you press **Save**; press `Esc` or **Cancel** to discard. Adding a
-  folder that contains one already listed absorbs the child (the parent covers
-  it), and existing thumbnails are reused rather than regenerated.
-- **Background indexing.** On launch, Tadaima quietly scans your folders for
-  changes in the background, generating thumbnails only for images that don't
-  already have them. Subfolders and photos appear in the UI as soon as they are
-  found and processed, and you can browse and expand folders freely while a scan
-  runs.
-- **Appearance.** Dark mode by default (best for photos); switch to Light or
-  Automatic (follow the system) in Preferences.
-- **Density.** The sidebar defaults to a genuinely tight **Compact** layout
-  suited to laptops and workstations. Switch to **Relaxed** (libadwaita's roomy
-  default) in Preferences.
-- **Cache tools.** The main menu offers **Cache status…** and **Regenerate all
-  caches**.
+## Install
 
-Supported formats: JPEG, PNG, HEIC (HEIC thumbnails need pillow-heif; see
-below). A HEIC photo's dimensions and camera details are read straight from the
-file, so they show even where Pillow can't open it.
-
-## Requirements
-
-- Python **3.10+**
-- **PyGObject** with **GTK 4** and **libadwaita**
-  (`gir1.2-gtk-4.0`, `gir1.2-adw-1`, `python3-gi`)
-- **PyYAML**
-- **Pillow** for thumbnail generation (photos are shown once their thumbnails
-  exist, so in practice it is required)
-- **pillow-heif** (optional) for HEIC support
-
-On Debian/Ubuntu:
-
-```sh
-sudo apt install python3-gi gir1.2-gtk-4.0 gir1.2-adw-1 python3-yaml python3-pil
-pip install --user pillow-heif   # optional, for HEIC
-```
-
-## Install & run
-
-Install it for your user (no root needed) so it appears in Activities and the
-Dock with its own icon:
+On either system, from the repository root:
 
 ```sh
 scripts/build-app.sh --install
 ```
 
-The script checks the dependencies, runs the tests, and installs a copy to
-`~/.local/share/qdvc-tadaima/`, a `qdvc-tadaima` launcher to `~/.local/bin/`,
-the menu entry `qdvc.Tadaima.desktop` and the icons. The installed copy is
-independent of this checkout, so run the script again after pulling changes;
-if Tadaima is running, it is closed (saving its state) and restarted. Other
-options:
+It builds the edition for the computer it runs on — the macOS edition on a
+Mac, the GTK 4 edition anywhere else — and passes every option through to
+that edition's own `scripts/build-app.sh` (run that directly for its
+`--help`). Requirements and details are in each edition's README:
 
-```sh
-scripts/build-app.sh               # check, test and stage in build/ only
-scripts/build-app.sh --no-tests    # skip the tests
-scripts/build-app.sh --run         # start the app afterwards
-scripts/build-app.sh --uninstall   # remove it again (keeps config and cache)
-PREFIX=/opt/qdvc scripts/build-app.sh --install   # install elsewhere
+- **Linux:** Python 3.10+, PyGObject with GTK 4 and libadwaita, PyYAML and
+  Pillow (pillow-heif for HEIC thumbnails). Installs per user into
+  `~/.local`, with a menu entry and icon.
+- **macOS:** macOS 14 or later and Xcode 16 or later (26 or later for the
+  Liquid Glass look). Builds an ad-hoc signed app into `~/Applications`; no
+  Apple Developer account needed.
+
+## What the editions share
+
+Both are the same app: the stream and its headings, the sidebar's tree,
+counts and scrollspy, Focus on Folder, the rules for which folders are
+scanned and which files count as photos, the thumbnail layout and keyboard
+moves, and the camera details shown. The macOS edition's core
+(`qdvc-tadaima-mac/Sources/TadaimaCore`) is a Swift port of the GTK edition's
+pure Python modules (`qdvc-tadaima-gtk4/qdvc`), and its tests replay a parity
+fixture generated from that Python by `qdvc-tadaima-mac/tools/make_fixtures.py`.
+When changing one of those rules in the GTK edition, regenerate the fixture
+and port the change; the Swift tests say what differs.
+
+Each edition keeps its own settings and cache on its own computer, and each
+follows its platform's conventions for menus, shortcuts, settings and the
+look of things.
+
+## Repository layout
+
 ```
-
-If you made a `~/.local/share/applications/qdvc-tadaima.desktop` launcher by
-hand as earlier versions of this README described, the script removes it.
-
-To run straight from the checkout instead:
-
-```sh
-python3 qdvc_tadaima.py
+scripts/build-app.sh     builds the edition for this OS
+qdvc-tadaima-gtk4/       the Linux edition (its own README, docs, tests, build script)
+qdvc-tadaima-mac/        the macOS edition (its own README, docs, tests, build script)
+vibe-coding/             logs of the conversations the app was built in
 ```
-
-The `--gtk4` flag and the `ui_backend` preference exist for parity with the
-QDVC app family. Only the GTK 4 front-end is implemented in Tadaima; `--gtk3`
-prints a note and falls through to GTK 4.
-
-## Data & privacy
-
-- Your photo folders are opened **read-only**. Tadaima never writes to them.
-- Preferences: `$XDG_CONFIG_HOME/qdvc-tadaima/config.yml`
-  (`~/.config/qdvc-tadaima/config.yml`).
-- Cache (index + derivatives): `$XDG_CACHE_HOME/qdvc-tadaima/`
-  (`~/.cache/qdvc-tadaima/`), with generated images under a `derivatives/`
-  subfolder. Safe to delete at any time; it regenerates. Files whose contents
-  are not a real supported image (e.g. macOS `._name.jpg` sidecar files) are
-  skipped during scanning even if their extension matches.
